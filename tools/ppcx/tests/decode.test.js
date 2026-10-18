@@ -236,3 +236,73 @@ test("decodes mcrf", () => {
     assert.equal(d.crfs, 2);
     assert.equal(d.supported, true);
 });
+
+test("decodes lmw and stmw with the register range", () => {
+    const lmw = decode(0xb8610000); // lmw r3, 0(r1)
+    assert.equal(lmw.name, "lmw");
+    assert.equal(lmw.kind, "load-multi");
+    assert.equal(lmw.rt, 3);
+    assert.equal(lmw.ra, 1);
+    assert.equal(lmw.imm, 0);
+    assert.equal(lmw.supported, true);
+    const stmw = decode(0xbc610000); // stmw r3, 0(r1)
+    assert.equal(stmw.name, "stmw");
+    assert.equal(stmw.kind, "store-multi");
+    assert.equal(stmw.rt, 3);
+    assert.equal(stmw.supported, true);
+    const neg = decode(0xb861fffc); // lmw r3, -4(r1)
+    assert.equal(neg.imm, -4);
+});
+
+test("decodes tw with its trap condition field", () => {
+    const d = decode(0x7fe00008); // tw 31, r0, r0
+    assert.equal(d.name, "tw");
+    assert.equal(d.form, "X");
+    assert.equal(d.to, 31);
+    assert.equal(d.ra, 0);
+    assert.equal(d.rb, 0);
+    assert.equal(d.supported, true);
+});
+
+test("decodes indexed floating-point accesses", () => {
+    const lfsx = decode((31 << 26) | (13 << 21) | (12 << 16) | (0 << 11) | (535 << 1));
+    assert.equal(lfsx.name, "lfsx");
+    assert.equal(lfsx.kind, "load");
+    assert.equal(lfsx.access, "f32");
+    assert.equal(lfsx.frd, 13);
+    assert.equal(lfsx.ra, 12);
+    assert.equal(lfsx.rb, 0);
+    const stfdux = decode((31 << 26) | (5 << 21) | (3 << 16) | (4 << 11) | (759 << 1));
+    assert.equal(stfdux.name, "stfdux");
+    assert.equal(stfdux.kind, "store");
+    assert.equal(stfdux.access, "f64");
+    assert.equal(stfdux.update, true);
+    assert.equal(stfdux.frd, 5);
+});
+
+test("decodes lswi/stswi with the byte count", () => {
+    const lswi = decode((31 << 26) | (3 << 21) | (4 << 16) | (8 << 11) | (597 << 1));
+    assert.equal(lswi.name, "lswi");
+    assert.equal(lswi.rt, 3);
+    assert.equal(lswi.ra, 4);
+    assert.equal(lswi.nb, 8);
+    assert.equal(lswi.supported, true);
+    const stswi = decode((31 << 26) | (3 << 21) | (0 << 16) | (0 << 11) | (725 << 1));
+    assert.equal(stswi.name, "stswi");
+    assert.equal(stswi.nb, 0);
+    assert.equal(stswi.supported, true);
+});
+
+test("fres lives in opcode 59 and the estimate ops are supported", () => {
+    const fres = decode((59 << 26) | (1 << 21) | (2 << 11) | (24 << 1));
+    assert.equal(fres.name, "fres");
+    assert.equal(fres.frd, 1);
+    assert.equal(fres.frb, 2);
+    assert.equal(fres.supported, true);
+    const frsqrte = decode((63 << 26) | (1 << 21) | (2 << 11) | (26 << 1));
+    assert.equal(frsqrte.name, "frsqrte");
+    assert.equal(frsqrte.supported, true);
+    const ps = decode((4 << 26) | (1 << 21) | (2 << 11) | (24 << 1));
+    assert.equal(ps.name, "ps_res");
+    assert.equal(ps.supported, true);
+});

@@ -186,3 +186,56 @@ test("falling off the end of the range dispatches to the next address", () => {
     const r = translate([0x38600005]);
     assert.match(r.code, /PPCX_DISPATCH\(c, 0x00001004u\); \/\* fallen through the end of the range \*\//);
 });
+
+test("lmw/stmw walk the register range from the evaluated address", () => {
+    const lmw = translate([0xb861ffe0, 0x4e800020]); // lmw r3, -32(r1)
+    assert.match(lmw.code, /ppcx_lmw\(c, \(u32\)\(c->gpr\[1\] \+ 0xffffffe0u\), 3u\);/);
+    assert.equal(lmw.unsupported.length, 0);
+    const stmw = translate([0xbc010000, 0x4e800020]); // stmw r0, 0(r1)
+    assert.match(stmw.code, /ppcx_stmw\(c, \(u32\)\(c->gpr\[1\] \+ 0x0u\), 0u\);/);
+    assert.equal(stmw.unsupported.length, 0);
+    // rA = 0 means the literal zero, not r0.
+    const zero = translate([0xb8000000, 0x4e800020]); // lmw r0, 0(r0)
+    assert.match(zero.code, /ppcx_lmw\(c, 0x0u, 0u\);/);
+});
+
+test("tw becomes a condition-checked guest trap", () => {
+    const w = (31 << 26) | (31 << 21) | (3 << 16) | (4 << 11) | (4 << 1); // tw 31, r3, r4
+    const r = translate([w, 0x4e800020]);
+    assert.match(r.code, /ppcx_tw\(c, 0x1fu, c->gpr\[3\], c->gpr\[4\], 0x00001000u\);/);
+    assert.equal(r.unsupported.length, 0);
+});
+
+test("indexed floating-point accesses reuse the load/store paths", () => {
+    const l = translate([(31 << 26) | (13 << 21) | (12 << 16) | (0 << 11) | (535 << 1), 0x4e800020]);
+    assert.match(
+        l.code,
+        /PPCX_FILL_SINGLE\(c->fpr\[13\], ppcx_bits_f32\(ppcx_rd32\(\(u32\)\(c->gpr\[12\] \+ c->gpr\[0\]\)\)\)\);/
+    );
+    assert.equal(l.unsupported.length, 0);
+    const su = translate([(31 << 26) | (7 << 21) | (3 << 16) | (4 << 11) | (759 << 1), 0x4e800020]);
+    assert.match(su.code, /u32 ea;/);
+    const store = su.code.indexOf("ppcx_wr64(ea, c->fpr[7].ps0.u);");
+    const update = su.code.indexOf("c->gpr[3] = ea;");
+    assert.ok(store >= 0 && update > store, "the rA update happens after the store");
+});
+
+test("lswi/stswi call the string helpers", () => {
+    const l = translate([(31 << 26) | (3 << 21) | (4 << 16) | (8 << 11) | (597 << 1), 0x4e800020]);
+    assert.match(l.code, /ppcx_lswi\(c, c->gpr\[4\], 3u, 8u\);/);
+    const s = translate([(31 << 26) | (3 << 21) | (0 << 16) | (8 << 11) | (725 << 1), 0x4e800020]);
+    assert.match(s.code, /ppcx_stswi\(c, 0u, 3u, 8u\);/);
+});
+
+test("reciprocal estimates lower to the exact-value helpers", () => {
+    const fres = translate([(59 << 26) | (1 << 21) | (2 << 11) | (24 << 1), 0x4e800020]);
+    assert.match(fres.code, /c->fpr\[1\]\.ps0\.d = ppcx_res_d\(c->fpr\[2\]\.ps0\.d\);/);
+    assert.equal(fres.unsupported.length, 0);
+    const frsqrte = translate([(63 << 26) | (3 << 21) | (4 << 11) | (26 << 1), 0x4e800020]);
+    assert.match(frsqrte.code, /c->fpr\[3\]\.ps0\.d = ppcx_rsqrte_d\(c->fpr\[4\]\.ps0\.d\);/);
+    const ps = translate([(4 << 26) | (5 << 21) | (6 << 11) | (24 << 1), 0x4e800020]);
+    assert.match(
+        ps.code,
+        /PPCX_SET_PS2\(c->fpr\[5\], \(float\)ppcx_res_d\(c->fpr\[6\]\.ps0\.d\), \(float\)ppcx_res_d\(c->fpr\[6\]\.ps1\.d\)\);/
+    );
+});

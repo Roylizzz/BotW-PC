@@ -104,7 +104,7 @@ function loadRpx(file) {
     };
 }
 
-const ANALYSIS_VERSION = 3; // bump when decode/analysis semantics change
+const ANALYSIS_VERSION = 6; // bump when decode/analysis semantics change
 
 function computeAnalysis(rpx) {
     const a = analyzeRpx(rpx.buf, rpx.parsed);

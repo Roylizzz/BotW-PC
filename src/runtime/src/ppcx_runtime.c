@@ -9,11 +9,18 @@
  *     region and routes both `PPCX_IMPORT_ADDR` dispatches and direct
  *     `PPCX_HLE` calls into the HLE layer;
  *   - stops with a precise diagnostic when execution reaches code that
- *     has no translation or a target that has no registered function.
+ *     has no translation, a target with no registered function, or a guest
+ *     trap instruction (tw).
  *
  * The operating system is not modelled yet: every HLE call is counted and
  * returns with the CPU untouched. `PPCX_HLE_TRACE=1` logs each call and
- * `PPCX_HLE_STRICT=1` aborts on the first one.
+ * `PPCX_HLE_STRICT=1` aborts on the first one. `PPCX_DISPATCH_TRACE=1` logs
+ * every control transfer that goes through the runtime dispatcher, which
+ * makes it possible to find the last translated function executed before a
+ * crash. `PPCX_FN_TRACE=1` prints every translated-function entry (the
+ * generated code must be built with ppcx_trace_enter calls) and
+ * `PPCX_CRASH_TRACE=1` installs a Windows crash handler that dumps the event
+ * ring of recent entries when the host takes an access violation.
  *
  * This code is original to the BotW-PC project and licensed under MIT.
  */
@@ -48,13 +55,103 @@ u8 *ppcx_memory = NULL;
 static unsigned g_hle_calls;
 static int g_trace;
 static int g_strict;
+static int g_dispatch_trace;
+static int g_fn_trace;
 static int g_initialized;
+
+/* Ring of translated-function entries filled by ppcx_trace_enter. */
+#define PPCX_FN_RING 1024u
+static u32 g_fn_ring[PPCX_FN_RING];
+static unsigned g_fn_entries;
+
+void ppcx_trace_enter(u32 addr) {
+    g_fn_ring[g_fn_entries & (PPCX_FN_RING - 1u)] = addr;
+    g_fn_entries++;
+    if (g_fn_trace) {
+        fprintf(stderr, "ppcx: fn %u: 0x%08X\n", g_fn_entries, (unsigned)addr);
+    }
+}
+
+#if defined(_WIN32)
+/*
+ * Minimal Windows declarations: the tcc kernel32 import set exposes
+ * GetModuleHandleA/GetProcAddress but not AddVectoredExceptionHandler, so the
+ * crash handler is registered dynamically. Only EXCEPTION_ACCESS_VIOLATION is
+ * inspected; Rip is read from the x64 CONTEXT record (offset 0xF8).
+ */
+typedef void *PpcxHmodule;
+PpcxHmodule __stdcall GetModuleHandleA(const char *name);
+void *__stdcall GetProcAddress(PpcxHmodule module, const char *name);
+
+typedef struct PpcxExceptionRecord {
+    unsigned long ExceptionCode;
+    unsigned long ExceptionFlags;
+    struct PpcxExceptionRecord *ExceptionRecord;
+    void *ExceptionAddress;
+    unsigned long NumberParameters;
+    unsigned long long ExceptionInformation[15];
+} PpcxExceptionRecord;
+
+typedef struct PpcxExceptionPointers {
+    PpcxExceptionRecord *ExceptionRecord;
+    void *ContextRecord;
+} PpcxExceptionPointers;
+
+typedef void *(__stdcall *PpcxVehHandler)(void *);
+typedef void *(__stdcall *PpcxAddVeh)(unsigned long, PpcxVehHandler);
+
+static void *__stdcall ppcx_crash_handler(void *raw) {
+    PpcxExceptionPointers *info = (PpcxExceptionPointers *)raw;
+    if (info != NULL && info->ExceptionRecord != NULL &&
+        info->ExceptionRecord->ExceptionCode == 0xC0000005u) {
+        static const char *const kinds[3] = { "read", "write", "execute" };
+        unsigned long long kind = info->ExceptionRecord->ExceptionInformation[0];
+        unsigned long long where = info->ExceptionRecord->ExceptionInformation[1];
+        unsigned long long rip = 0;
+        unsigned i;
+        unsigned start;
+        if (info->ContextRecord != NULL) {
+            rip = *(unsigned long long *)((const char *)info->ContextRecord + 0xF8);
+        }
+        fprintf(stderr, "ppcx: host access violation: %s at 0x%llX (host rip 0x%llX)\n",
+                kind < 3u ? kinds[kind] : "unknown", where, rip);
+        start = g_fn_entries > 24u ? g_fn_entries - 24u : 0u;
+        fprintf(stderr, "ppcx: last %u translated function entries:\n", g_fn_entries - start);
+        for (i = start; i < g_fn_entries; i++) {
+            fprintf(stderr, "  [%u] 0x%08X\n", i,
+                    (unsigned)g_fn_ring[i & (PPCX_FN_RING - 1u)]);
+        }
+        fflush(stderr);
+    }
+    return (void *)0; /* EXCEPTION_CONTINUE_SEARCH */
+}
+
+static void ppcx_install_crash_handler(void) {
+    PpcxHmodule kernel32 = GetModuleHandleA("kernel32.dll");
+    PpcxAddVeh add = kernel32 != NULL
+        ? (PpcxAddVeh)(void *)GetProcAddress(kernel32, "AddVectoredExceptionHandler")
+        : (PpcxAddVeh)0;
+    if (add != NULL && add(1u, ppcx_crash_handler) != NULL) {
+        fprintf(stderr, "ppcx: crash trace installed (PPCX_CRASH_TRACE)\n");
+    } else {
+        fprintf(stderr, "ppcx: could not install the crash trace\n");
+    }
+}
+#else
+static void ppcx_install_crash_handler(void) {}
+#endif
 
 void ppcx_runtime_init(void) {
     if (g_initialized) return;
     g_initialized = 1;
+    setvbuf(stderr, NULL, _IONBF, 0); /* diagnostics must survive a crash */
     g_trace = getenv("PPCX_HLE_TRACE") != NULL;
     g_strict = getenv("PPCX_HLE_STRICT") != NULL;
+    g_dispatch_trace = getenv("PPCX_DISPATCH_TRACE") != NULL;
+    g_fn_trace = getenv("PPCX_FN_TRACE") != NULL;
+    if (getenv("PPCX_CRASH_TRACE") != NULL) {
+        ppcx_install_crash_handler();
+    }
     ppcx_memory = (u8 *)calloc(1, (size_t)PPCX_ARENA_BYTES);
     if (ppcx_memory == NULL) {
         fprintf(stderr, "ppcx: could not allocate the guest arena (%u bytes)\n",
@@ -84,6 +181,9 @@ static void ppcx_dump_state(const Cpu *c) {
 }
 
 void ppcx_dispatch(Cpu *c, u32 target) {
+    if (g_dispatch_trace) {
+        fprintf(stderr, "ppcx: dispatch 0x%08X\n", (unsigned)target);
+    }
     if (target >= PPCX_HLE_TRAMPOLINE_BASE &&
         target < PPCX_HLE_TRAMPOLINE_BASE + PPCX_HLE_TRAMPOLINE_RANGE) {
         ppcx_hle_call(c, (target - PPCX_HLE_TRAMPOLINE_BASE) / PPCX_HLE_TRAMPOLINE_STRIDE);
@@ -104,6 +204,12 @@ void ppcx_unimpl(Cpu *c, u32 addr) {
             (unsigned)addr);
     ppcx_dump_state(c);
     exit(3);
+}
+
+void ppcx_trap(Cpu *c, u32 addr, const char *name) {
+    fprintf(stderr, "ppcx: guest trap (%s) at 0x%08X\n", name, (unsigned)addr);
+    ppcx_dump_state(c);
+    exit(6);
 }
 
 void ppcx_call_unknown(Cpu *c, u32 target) {

@@ -139,6 +139,55 @@ static inline u16 ppcx_rd16_host(u32 ea) { return *(const u16 *)(const void *)pp
 static inline void ppcx_wr32_host(u32 ea, u32 v) { *(u32 *)(void *)ppcx_ptr(ea) = v; }
 static inline void ppcx_wr16_host(u32 ea, u16 v) { *(u16 *)(void *)ppcx_ptr(ea) = v; }
 
+/*
+ * Multiple-register load/store (lmw/stmw). The effective address is passed
+ * in already evaluated: as on hardware, writing the base register inside the
+ * transferred range does not change the addresses used by the remainder.
+ */
+static inline void ppcx_lmw(Cpu *c, u32 ea, u32 rt) {
+    u32 n;
+    for (n = rt; n < 32u; n++) {
+        c->gpr[n] = ppcx_rd32(ea);
+        ea += 4u;
+    }
+}
+
+static inline void ppcx_stmw(Cpu *c, u32 ea, u32 rs) {
+    u32 n;
+    for (n = rs; n < 32u; n++) {
+        ppcx_wr32(ea, c->gpr[n]);
+        ea += 4u;
+    }
+}
+
+/*
+ * String load/store (lswi/stswi). Byte n goes to/from bits 24..31 of its
+ * register, the next bytes move to lower bit positions, and register
+ * numbers wrap from r31 to r0 (ISA pseudocode). NB = 0 moves 32 bytes.
+ */
+static inline void ppcx_lswi(Cpu *c, u32 ea, u32 rt, u32 nb) {
+    u32 n = nb ? nb : 32u;
+    u32 r = (rt - 1u) & 31u;
+    for (u32 i = 0; i < n; i++) {
+        if (r == 31u) r = 0u;
+        else r++;
+        if ((i & 3u) == 0u) c->gpr[r] = 0u;
+        c->gpr[r] |= (u32)ppcx_rd8(ea) << (24u - 8u * (i & 3u));
+        ea += 1u;
+    }
+}
+
+static inline void ppcx_stswi(Cpu *c, u32 ea, u32 rs, u32 nb) {
+    u32 n = nb ? nb : 32u;
+    u32 r = (rs - 1u) & 31u;
+    for (u32 i = 0; i < n; i++) {
+        if (r == 31u) r = 0u;
+        else r++;
+        ppcx_wr8(ea, (u8)(c->gpr[r] >> (24u - 8u * (i & 3u))));
+        ea += 1u;
+    }
+}
+
 static inline float ppcx_bits_f32(u32 bits) {
     union { u32 u; float f; } v;
     v.u = bits;
@@ -316,6 +365,25 @@ static inline void ppcx_cmpl(Cpu *c, u32 crf, u32 a, u32 b) {
     ppcx_cr_set(c, crf, a < b, a > b, a == b, (c->xer & PPCX_XER_SO) != 0);
 }
 
+/*
+ * tw: trap word. When any selected condition holds the guest would take a
+ * program exception; in this prototype the runtime reports it with a
+ * register dump and stops (implemented in ppcx_runtime.c). TO bit names as
+ * in the ISA: 0x10 signed less, 0x08 signed greater, 0x04 equal,
+ * 0x02 unsigned less, 0x01 unsigned greater.
+ */
+extern void ppcx_trap(Cpu *c, u32 addr, const char *name);
+
+static inline void ppcx_tw(Cpu *c, u32 to, u32 a, u32 b, u32 addr) {
+    s32 sa = (s32)a, sb = (s32)b;
+    int hit = ((to & 0x10u) && sa < sb) ||
+              ((to & 0x08u) && sa > sb) ||
+              ((to & 0x04u) && sa == sb) ||
+              ((to & 0x02u) && a < b) ||
+              ((to & 0x01u) && a > b);
+    if (hit) ppcx_trap(c, addr, "tw");
+}
+
 static inline u32 ppcx_crm_mask(u32 fm) {
     u32 m = 0;
     for (u32 i = 0; i < 8; i++) {
@@ -486,6 +554,24 @@ static inline double ppcx_neg_unless_nan_d(double x) { return isnan(x) ? x : -x;
 static inline float ppcx_neg_unless_nan_s(float x) { return isnan(x) ? x : -x; }
 
 /*
+ * Reciprocal and reciprocal-square-root estimates (fres/frsqrte/frsqrtes
+ * and the ps_* forms).
+ *
+ * FIDELITY NOTE (Phase 3): real hardware returns a 12-bit table estimate
+ * refined from the operand's low bits; this iteration computes the exact
+ * result instead. Sequences that refine the estimate with Newton-Raphson
+ * converge to the same value; code that inspects the estimate bits directly
+ * would see differences.
+ */
+static inline double ppcx_res_d(double b) { return 1.0 / b; }
+
+static inline double ppcx_rsqrte_d(double b) {
+    if (isnan(b)) return b;
+    if (b < 0.0) return NAN;
+    return 1.0 / sqrt(b);
+}
+
+/*
  * FP compare. CR field value: 8 = less, 4 = greater, 2 = equal, 1 =
  * unordered (the FU bit lands in the SO position, as reproduced by the
  * reference model). The ordered/unordered distinction only affects FPSCR
@@ -601,6 +687,14 @@ extern void ppcx_dispatch(Cpu *c, u32 target);
 extern void ppcx_unimpl(Cpu *c, u32 addr);
 
 extern void ppcx_call_unknown(Cpu *c, u32 target);
+
+/*
+ * Records the entry of a translated function for debugging. Trace builds of
+ * the generated code call this once per function entry; PPCX_FN_TRACE=1
+ * makes it print every entry and PPCX_CRASH_TRACE=1 (Windows) uses the ring
+ * to dump the most recent entries when the host takes an access violation.
+ */
+extern void ppcx_trace_enter(u32 addr);
 
 #define PPCX_HLE(c, idx) ppcx_hle_call((c), (idx))
 #define PPCX_IMPORT_ADDR(idx) ppcx_import_addr((idx))

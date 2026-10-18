@@ -266,6 +266,15 @@ function translateFunction(opts) {
     for (const ins of instrs) {
         if (labels.has(ins.addr)) emitRaw(`${labelName(ins.addr)}:;`);
 
+        if (ins.kind === "load-multi" || ins.kind === "store-multi") {
+            /* lmw/stmw: the effective address is evaluated once, then the
+             * helper walks the register range (see ppcx_lmw/ppcx_stmw). */
+            const ea = dEA(ins);
+            if (ins.kind === "load-multi") emit(`ppcx_lmw(c, ${ea}, ${ins.rt}u);`);
+            else emit(`ppcx_stmw(c, ${ea}, ${ins.rt}u);`);
+            continue;
+        }
+
         if (memoryIns(ins)) {
             emitMemory(ins);
             continue;
@@ -627,6 +636,9 @@ function translateFunction(opts) {
             case "cmpl":
                 emit(`ppcx_cmpl(c, ${ins.crf}, ${g(ins.ra)}, ${g(ins.rb)});`);
                 break;
+            case "tw":
+                emit(`ppcx_tw(c, ${u32hex(ins.to)}, ${g(ins.ra)}, ${g(ins.rb)}, ${addrHex(ins.addr)});`);
+                break;
             case "mfspr":
             case "mftb":
                 emit(`${g(ins.rt)} = ppcx_mfspr(c, ${ins.spr}u);`);
@@ -658,6 +670,12 @@ function translateFunction(opts) {
                 break;
             case "dcbz":
                 emit(`ppcx_dcbz(${xEA(ins)});`);
+                break;
+            case "lswi":
+                emit(`ppcx_lswi(c, ${ins.ra === 0 ? "0u" : g(ins.ra)}, ${ins.rt}u, ${ins.nb}u);`);
+                break;
+            case "stswi":
+                emit(`ppcx_stswi(c, ${ins.ra === 0 ? "0u" : g(ins.ra)}, ${ins.rt}u, ${ins.nb}u);`);
                 break;
 
             // -------------------------------------------------- floating point
@@ -754,6 +772,15 @@ function translateFunction(opts) {
                 break;
             case "fcfid":
                 emit(`${d0(ins.frd)} = (double)(s64)${u0(ins.frb)};`);
+                break;
+            case "fres":
+                emit(`${d0(ins.frd)} = ppcx_res_d(${d0(ins.frb)});`);
+                break;
+            case "frsqrte":
+                emit(`${d0(ins.frd)} = ppcx_rsqrte_d(${d0(ins.frb)});`);
+                break;
+            case "frsqrtes":
+                emit(`${FILL(ins.frd, `(float)ppcx_rsqrte_d(${d0(ins.frb)})`)};`);
                 break;
 
             // ------------------------------------------------- paired single
@@ -854,6 +881,16 @@ function translateFunction(opts) {
                 break;
             case "ps_mr":
                 emit(`c->fpr[${ins.frd}] = c->fpr[${ins.frb}];`);
+                break;
+            case "ps_res":
+                emit(
+                    `PPCX_SET_PS2(c->fpr[${ins.frd}], (float)ppcx_res_d(${d0(ins.frb)}), (float)ppcx_res_d(${d1(ins.frb)}));`
+                );
+                break;
+            case "ps_rsqrte":
+                emit(
+                    `PPCX_SET_PS2(c->fpr[${ins.frd}], (float)ppcx_rsqrte_d(${d0(ins.frb)}), (float)ppcx_rsqrte_d(${d1(ins.frb)}));`
+                );
                 break;
             case "ps_merge00":
                 emit(`PPCX_SET_PS2(c->fpr[${ins.frd}], (float)${d0(ins.fra)}, (float)${d0(ins.frb)});`);

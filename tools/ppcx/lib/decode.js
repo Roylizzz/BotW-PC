@@ -35,6 +35,7 @@ const L_BIT31 = (w) => (w >>> 10) & 1; // bit 10 (compare width, lwarx EH)
 const SPR = (w) => (((w >>> 11) & 0x1f) << 5) | ((w >>> 16) & 0x1f);
 const BO = (w) => (w >>> 21) & 0x1f;
 const BI = (w) => (w >>> 16) & 0x1f;
+const TO = (w) => (w >>> 21) & 0x1f; // trap condition field (tw)
 /* BD (bc): byte displacement in bits 2..15; bits 1-0 are AA/LK and must be
  * masked off before sign-extending from bit 15. */
 const BD_SIGN = (w) => {
@@ -141,6 +142,8 @@ const X31 = {
     // compares
     0: { name: "cmp", compare: "signed" },
     32: { name: "cmpl", compare: "unsigned" },
+    // trap
+    4: { name: "tw", trap: true },
     // SPR access
     339: { name: "mfspr", spr: true },
     467: { name: "mtspr", spr: true },
@@ -167,6 +170,18 @@ const X31 = {
     918: { name: "sthbrx", kind: "store", access: "host16" },
     // FP store of the integer in the low word
     983: { name: "stfiwx", kind: "store", access: "fpu-lo32" },
+    // indexed floating point (X-form): lwzx/stwx shape with FPR targets
+    535: { name: "lfsx", kind: "load", access: "f32" },
+    567: { name: "lfsux", kind: "load", access: "f32", update: true },
+    599: { name: "lfdx", kind: "load", access: "f64" },
+    631: { name: "lfdux", kind: "load", access: "f64", update: true },
+    663: { name: "stfsx", kind: "store", access: "f32" },
+    695: { name: "stfsux", kind: "store", access: "f32", update: true },
+    727: { name: "stfdx", kind: "store", access: "f64" },
+    759: { name: "stfdux", kind: "store", access: "f64", update: true },
+    // string load/store (NB in the RB field; 0 means 32 bytes)
+    597: { name: "lswi", kind: "string-load" },
+    725: { name: "stswi", kind: "string-store" },
     // reservation
     20: { name: "lwarx", kind: "lwarx" },
     150: { name: "stwcx.", kind: "stwcx" },
@@ -213,6 +228,7 @@ const FPA59 = {
     20: "fsubs",
     21: "fadds",
     22: "fsqrts",
+    24: "fres",
     25: "fmuls",
     26: "frsqrtes",
     28: "fmsubs",
@@ -227,7 +243,6 @@ const FPX63 = {
     12: "frsp",
     14: "fctiw",
     15: "fctiwz",
-    24: "fres",
     32: "fcmpo",
     40: "fneg",
     72: "fmr",
@@ -326,7 +341,6 @@ function decode(word) {
     if (LOADSTORE[op]) {
         const info = LOADSTORE[op];
         const isFloat = info.access === "f32" || info.access === "f64";
-        const multi = info.kind === "load-multi" || info.kind === "store-multi";
         const d = {
             ...base,
             name: info.name,
@@ -336,11 +350,10 @@ function decode(word) {
             kind: info.kind,
             access: info.access,
             update: !!info.update,
-            supported: !multi,
+            supported: true,
         };
         if (isFloat) d.frd = RT(w);
         else d.rt = RT(w);
-        if (multi) d.rt = RT(w);
         return d;
     }
 
@@ -427,6 +440,9 @@ function decode(word) {
         const info = X31[xo];
         if (!info) return { ...base, name: `op31-xo${xo}`, supported: false, unknownOpcode: true };
 
+        if (info.trap) {
+            return { ...base, name: "tw", form: "X", to: TO(w), ra: RA(w), rb: RB(w), supported: true };
+        }
         if (info.compare) {
             return {
                 ...base,
@@ -445,7 +461,7 @@ function decode(word) {
         if (info.name === "mfcr") return { ...base, name: "mfcr", form: "X", rt: RT(w), supported: true };
         if (info.name === "mtcrf") return { ...base, name: "mtcrf", form: "XFX", rs: RS(w), fm: FM(w), supported: true };
         if (info.kind === "load" || info.kind === "store") {
-            return {
+            const d = {
                 ...base,
                 name: info.name,
                 form: "X",
@@ -455,6 +471,20 @@ function decode(word) {
                 kind: info.kind,
                 access: info.access,
                 update: !!info.update,
+                supported: true,
+            };
+            if (info.access === "f32" || info.access === "f64") d.frd = RT(w);
+            return d;
+        }
+        if (info.kind === "string-load" || info.kind === "string-store") {
+            return {
+                ...base,
+                name: info.name,
+                form: "X",
+                rt: RT(w),
+                ra: RA(w),
+                nb: RB(w),
+                rc: RC_BIT(w),
                 supported: true,
             };
         }
@@ -503,7 +533,7 @@ function decode(word) {
                 frb: RB(w),
                 frc: FRC(w),
                 rc: RC_BIT(w),
-                supported: !nameA.includes("rsqrte"),
+                supported: true,
             };
         }
         if (single) return { ...base, name: `op59-xo${xo5}`, supported: false, unknownOpcode: true };
@@ -518,7 +548,7 @@ function decode(word) {
             } else {
                 d.fra = RA(w);
             }
-            d.supported = nameX !== "fres" && nameX !== "fctid";
+            d.supported = nameX !== "fctid";
             return d;
         }
         return { ...base, name: `op63-xo${xo10}`, supported: false, unknownOpcode: true };
@@ -531,7 +561,7 @@ function decode(word) {
         if (nameX) {
             const d = { ...base, name: nameX, form: "X", frd: RT(w), frb: RB(w), fra: RA(w), rc: RC_BIT(w) };
             if (nameX.startsWith("ps_cmp")) d.crf = CRF(w);
-            d.supported = nameX !== "ps_res" && nameX !== "ps_rsqrte";
+            d.supported = true;
             return d;
         }
         const xo5 = XO5(w);
@@ -589,6 +619,7 @@ module.exports = {
     SPR,
     BO,
     BI,
+    TO,
     BD_SIGN,
     LI_SIGN,
     SH,
