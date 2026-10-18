@@ -49,8 +49,12 @@ Deliverable: `docs/research/` notes and format specs.
 - [x] Naming material identified: names-only function/symbol database for
       the same game version — `tools/fetch-symbol-data.ps1` (local, never
       committed).
-- [ ] Maintainer sign-off on the recommended direction (ADR-0002).
-- [ ] Once signed off, first workstreams:
+- [x] Maintainer sign-off on the recommended direction — ADR-0002 accepted
+      2026-10-18 (option A — static recompilation + HLE runtime — structured
+      as option D in time).
+- [ ] First workstreams (started — the prototype already translates and runs
+      an end-to-end function; see
+      `docs/research/2026-10-recompiler-prototype.md`):
   - recompiler pass over our own RPX (boundaries from the Ghidra census +
     `tools/rpxinfo` relocations; big-endian memory model; tail calls;
     indirect-call dispatch);

@@ -3,8 +3,11 @@
 An open, **clean-room** research project studying *The Legend of Zelda: Breath
 of the Wild* — with the long-term goal of running it natively on PC.
 
-> **Status: Phase 0 — legal groundwork and project organization.**
-> No runtime code yet. See [ROADMAP.md](ROADMAP.md).
+> **Status: Phase 2 — feasibility signed off (ADR-0002); prototype in
+> progress.** The analysis environment is in place (REA + Ghidra), the RPX
+> format is documented, and the prototype (`tools/ppcx` + `src/runtime`)
+> already translates and runs real functions from a contributor's own copy.
+> See [ROADMAP.md](ROADMAP.md).
 
 ## What this project is
 
@@ -47,8 +50,8 @@ Read the full policy: [DISCLAIMER.md](DISCLAIMER.md) and
 | `docs/research/` | Findings from analysis of contributors' own copies |
 | `docs/reverse-engineering/` | Tooling and workflow docs (REA, Ghidra, …) |
 | `docs/architecture/` | Architecture sketch and decision records (ADRs) |
-| `tools/` | Original CLI tools — first one: `tools/rpxinfo` (RPX/RPL inspector) |
-| `src/` *(planned)* | Original runtime code |
+| `tools/` | Original CLI tools: `tools/rpxinfo` (RPX/RPL inspector) and `tools/ppcx` (PowerPC → C recompiler prototype) |
+| `src/` | Original runtime code (`src/runtime`: memory model, dispatch, HLE layer) |
 
 ## Legal
 

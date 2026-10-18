@@ -1,9 +1,8 @@
 # 2. Port approach: options and evaluation criteria
 
 - **Date:** 2026-10-18
-- **Status:** draft — **maintainer decision pending**; evidence gathered
-  2026-10-18 and a recommendation is recorded below (see *Evidence* and
-  *Recommendation*)
+- **Status:** accepted — maintainer sign-off recorded 2026-10-18; the
+  recommendation below is adopted (see *Decision*)
 
 ## Context
 
@@ -115,7 +114,7 @@ option A is no longer hypothetical — least of all on Wii U. Full write-up:
   thread/core scheduling fidelity, texture write-watching, shader
   translation — each has at least one public reference implementation.
 
-## Recommendation (pending maintainer sign-off)
+## Recommendation (adopted)
 
 Adopt **option A — static recompilation + original HLE runtime** as the
 primary direction, structured as **option D in time**: land subsystems
@@ -134,17 +133,26 @@ never copied into this MIT repository; any vendored MPL-2.0 components
 
 ## Decision
 
-**Deferred — explicitly a maintainer decision** (Phase 2 deliverable per
-the [roadmap](../../../ROADMAP.md)). Evidence still to gather:
+**Accepted (maintainer sign-off, 2026-10-18):** adopt **option A — static
+recompilation + original HLE runtime**, structured as **option D in time**:
+land subsystems incrementally behind HLE stubs, with two documented
+migration targets — native GX2 on Vulkan (short/medium term) and
+replacement by `zeldaret/botw` source as that decompilation matures (long
+term). Option B remains out of scope as a standalone effort; option C stays
+excluded.
 
-- Ghidra census of the binary (function count, control-flow quality).
-- Decompilation sample study (how clean do typical functions come out?).
-- Inventory of hard spots: indirect calls, computed jumps, TLS, exception
-  handling, C++ runtime usage.
+Evidence at decision time (the items previously listed as pending):
 
-When that evidence lands, this ADR gets a filled-in decision section and
-its status changes to `accepted` (or the decision is recorded in a new
-ADR that supersedes this one).
+- **Ghidra census:** 96,874 branch-derived function starts
+  ([2026-10-ghidra-census.md](../../research/2026-10-ghidra-census.md)).
+- **Decompilation sample:** the Phase 2 prototype (`tools/ppcx` +
+  `src/runtime`) translates real engine functions to C and runs an
+  end-to-end demo function against the HLE runtime
+  ([2026-10-recompiler-prototype.md](../../research/2026-10-recompiler-prototype.md)).
+- **Hard spots:** indirect calls route through the runtime dispatcher, tail
+  calls and ADDR16 import addresses are handled, the remaining opcode gaps
+  are small and enumerated (`psq_l`/`psq_st`), and big-endian memory plus
+  single-threaded reservations are modelled in the runtime.
 
 ## Consequences
 
