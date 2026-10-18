@@ -1,0 +1,238 @@
+"use strict";
+
+const test = require("node:test");
+const assert = require("node:assert/strict");
+
+const { decode } = require("../lib/decode.js");
+
+test("decodes addi with r0 as the literal zero", () => {
+    const d = decode(0x38600005); // addi r3, r0, 5
+    assert.equal(d.name, "addi");
+    assert.equal(d.rt, 3);
+    assert.equal(d.ra, 0);
+    assert.equal(d.imm, 5);
+    assert.equal(d.supported, true);
+});
+
+test("decodes addic and addic.", () => {
+    const a = decode(0x30630005); // addic r3, r3, 5
+    assert.equal(a.name, "addic");
+    assert.equal(a.rt, 3);
+    assert.equal(a.ra, 3);
+    assert.equal(a.imm, 5);
+    const b = decode(0x34630005); // addic. r3, r3, 5
+    assert.equal(b.name, "addic.");
+    assert.equal(b.imm, 5);
+});
+
+test("decodes mfspr (mflr r0)", () => {
+    const d = decode(0x7c0802a6);
+    assert.equal(d.name, "mfspr");
+    assert.equal(d.rt, 0);
+    assert.equal(d.spr, 8);
+});
+
+test("decodes stwu with a negative offset and the update flag", () => {
+    const d = decode(0x9421ffe0); // stwu r1, -32(r1)
+    assert.equal(d.name, "stwu");
+    assert.equal(d.kind, "store");
+    assert.equal(d.update, true);
+    assert.equal(d.ra, 1);
+    assert.equal(d.rt, 1);
+    assert.equal(d.imm, -32);
+});
+
+test("decodes blr and bctr", () => {
+    assert.equal(decode(0x4e800020).branch, "blr");
+    assert.equal(decode(0x4e800420).branch, "bctr");
+});
+
+test("bctrl carries the link bit", () => {
+    const d = decode(0x4e800421); // bcctr 20, 0 with LK = 1
+    assert.equal(d.name, "bcctr");
+    assert.equal(d.branch, "bcctr");
+    assert.equal(d.bo, 20);
+    assert.equal(d.bi, 0);
+    assert.equal(d.lk, true);
+});
+
+test("decodes the canonical nop", () => {
+    const d = decode(0x60000000);
+    assert.equal(d.name, "nop");
+    assert.equal(d.supported, true);
+});
+
+test("decodes b and bl displacements", () => {
+    const b = decode(0x48000008);
+    assert.equal(b.branch, "b");
+    assert.equal(b.li, 8);
+    assert.equal(b.lk, false);
+    const bl = decode(0x48000005);
+    assert.equal(bl.branch, "bl");
+    assert.equal(bl.li, 4);
+    assert.equal(bl.lk, true);
+    // Sign extension from bit 25 and displacements beyond 16 MB.
+    const back = decode(0x4bfffff8);
+    assert.equal(back.li, -8);
+    const far = decode(0x4914fe04);
+    assert.equal(far.li, 0x0114fe04);
+});
+
+test("decodes bc conditions", () => {
+    const d = decode(0x4082000c); // bne +12
+    assert.equal(d.name, "bc");
+    assert.equal(d.bo, 4);
+    assert.equal(d.bi, 2);
+    assert.equal(d.bd, 12);
+    const e = decode(0x4182000c); // beq +12
+    assert.equal(e.bo, 12);
+    assert.equal(e.bi, 2);
+    // Negative displacement and AA/LK bits outside the field.
+    const neg = decode(0x4082fed8); // bne -296
+    assert.equal(neg.bd, -296);
+    const aa = decode(0x4082feda); // same displacement, AA=1
+    assert.equal(aa.aa, 1);
+    assert.equal(aa.bd, -296);
+});
+
+test("decodes cmpi (cmpwi r3, 0)", () => {
+    const d = decode(0x2c030000);
+    assert.equal(d.name, "cmpi");
+    assert.equal(d.crf, 0);
+    assert.equal(d.ra, 3);
+    assert.equal(d.imm, 0);
+});
+
+test("decodes loads and stores", () => {
+    const lwz = decode(0x80640000); // lwz r3, 0(r4)
+    assert.equal(lwz.name, "lwz");
+    assert.equal(lwz.rt, 3);
+    assert.equal(lwz.ra, 4);
+    assert.equal(lwz.access, "u32");
+    const stw = decode(0x90640004); // stw r3, 4(r4)
+    assert.equal(stw.name, "stw");
+    assert.equal(stw.kind, "store");
+    assert.equal(stw.rt, 3);
+    assert.equal(stw.ra, 4);
+    assert.equal(stw.imm, 4);
+});
+
+test("decodes or (mr r3, r4)", () => {
+    const d = decode(0x7c832378);
+    assert.equal(d.name, "or");
+    assert.equal(d.rt, 4);
+    assert.equal(d.ra, 3);
+    assert.equal(d.rb, 4);
+});
+
+test("decodes add", () => {
+    const d = decode(0x7c632214); // add r3, r3, r4
+    assert.equal(d.name, "add");
+    assert.equal(d.rt, 3);
+    assert.equal(d.ra, 3);
+    assert.equal(d.rb, 4);
+});
+
+test("decodes add. with the record bit", () => {
+    const d = decode(0x7c632215);
+    assert.equal(d.name, "add");
+    assert.equal(d.rc, true);
+});
+
+test("decodes rlwinm (slwi r3, r4, 5)", () => {
+    const d = decode(0x5483283e);
+    assert.equal(d.name, "rlwinm");
+    assert.equal(d.rs, 4);
+    assert.equal(d.ra, 3);
+    assert.equal(d.sh, 5);
+    assert.equal(d.mb, 0);
+    assert.equal(d.me, 31);
+    assert.equal(d.rc, false);
+});
+
+test("decodes fadds", () => {
+    const d = decode(0xec22182a); // fadds f1, f2, f3
+    assert.equal(d.name, "fadds");
+    assert.equal(d.frd, 1);
+    assert.equal(d.fra, 2);
+    assert.equal(d.frb, 3);
+});
+
+test("decodes ps_add", () => {
+    const d = decode(0x1022182a); // ps_add f1, f2, f3
+    assert.equal(d.name, "ps_add");
+    assert.equal(d.frd, 1);
+    assert.equal(d.fra, 2);
+    assert.equal(d.frb, 3);
+});
+
+test("decodes lfs and stfd", () => {
+    const lfs = decode(0xc0230000); // lfs f1, 0(r3)
+    assert.equal(lfs.name, "lfs");
+    assert.equal(lfs.frd, 1);
+    assert.equal(lfs.access, "f32");
+    const stfd = decode(0xd8230008); // stfd f1, 8(r3)
+    assert.equal(stfd.name, "stfd");
+    assert.equal(stfd.frd, 1);
+    assert.equal(stfd.access, "f64");
+});
+
+test("decodes fcmpu", () => {
+    const w = (63 << 26) | (1 << 16) | (2 << 11); // fcmpu cr0, f1, f2
+    const d = decode(w);
+    assert.equal(d.name, "fcmpu");
+    assert.equal(d.crf, 0);
+    assert.equal(d.fra, 1);
+    assert.equal(d.frb, 2);
+});
+
+test("decodes paired-single X-form (ps_mr)", () => {
+    const w = (4 << 26) | (3 << 21) | (4 << 11) | (72 << 1); // ps_mr f3, f4
+    const d = decode(w);
+    assert.equal(d.name, "ps_mr");
+    assert.equal(d.frd, 3);
+    assert.equal(d.frb, 4);
+});
+
+test("decodes paired-single A-form with the C operand (ps_madds0)", () => {
+    const w = (4 << 26) | (1 << 21) | (2 << 16) | (3 << 11) | (4 << 6) | (14 << 1);
+    const d = decode(w);
+    assert.equal(d.name, "ps_madds0");
+    assert.equal(d.frd, 1);
+    assert.equal(d.fra, 2);
+    assert.equal(d.frb, 3);
+    assert.equal(d.frc, 4);
+});
+
+test("marks unsupported instructions without losing the name", () => {
+    const sc = decode(0x44000002);
+    assert.equal(sc.supported, false);
+    const psq = decode((56 << 26) | (1 << 21)); // psq_l f1, 0(r0), 0, 0
+    assert.equal(psq.name, "psq_l");
+    assert.equal(psq.supported, false);
+});
+
+test("decodes mtcrf fields", () => {
+    const w = (31 << 26) | (3 << 21) | (0x80 << 12) | (144 << 1); // mtcrf 0x80, r3
+    const d = decode(w);
+    assert.equal(d.name, "mtcrf");
+    assert.equal(d.rs, 3);
+    assert.equal(d.fm, 0x80);
+});
+
+test("decodes sync and lwsync", () => {
+    const sync = (31 << 26) | (598 << 1);
+    const lwsync = sync | (1 << 21);
+    assert.equal(sync, 0x7c0004ac);
+    assert.equal(decode(sync).name, "sync");
+    assert.equal(decode(lwsync).name, "lwsync");
+});
+
+test("decodes mcrf", () => {
+    const w = (19 << 26) | (1 << 23) | (2 << 16) | (0 << 1); // mcrf cr1, cr2
+    const d = decode(w);
+    assert.equal(d.name, "mcrf");
+    assert.equal(d.crfd, 1);
+    assert.equal(d.crfs, 2);
+    assert.equal(d.supported, true);
+});

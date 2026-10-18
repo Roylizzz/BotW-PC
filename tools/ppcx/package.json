@@ -1,0 +1,13 @@
+{
+  "name": "ppcx",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Original PowerPC -> C static recompiler prototype for Wii U RPX modules (function discovery, import mapping, instruction coverage, C emission)",
+  "license": "MIT",
+  "bin": {
+    "ppcx": "./ppcx.js"
+  },
+  "scripts": {
+    "test": "node --test tests/decode.test.js tests/translate.test.js tests/analyze.test.js tests/imports.test.js"
+  }
+}
