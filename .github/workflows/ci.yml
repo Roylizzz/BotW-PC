@@ -1,0 +1,40 @@
+name: Source-owned tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  node-tools:
+    name: Node synthetic tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ['22', '24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - name: RPX parser tests (synthetic fixture)
+        working-directory: tools/rpxinfo
+        run: npm test
+      - name: PPC decoder and codegen tests (synthetic fixture)
+        working-directory: tools/ppcx
+        run: npm test
+
+  c-syntax:
+    name: Runtime C syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile original runtime source without any game binaries
+        run: |
+          cc -std=c11 -Wall -Wextra -I src/runtime/include -fsyntax-only src/runtime/src/main.c src/runtime/src/ppcx_runtime.c
+
+# No Nintendo files, game dumps, generated derived code, assets or keys are used or uploaded.

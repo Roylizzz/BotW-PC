@@ -76,3 +76,10 @@ and files disagree, trust the files, and correct the memory.
 
 - The maintainer communicates in **Spanish**: reply to them in Spanish.
 - Keep code, commits and documentation in **English**.
+
+## 7. Native-port research and verified development gates
+
+- Follow [the comparative native-port research](docs/research/2026-10-native-port-patterns.md), [audit](docs/audits/2026-10-18-code-audit.md), and [stabilization roadmap](docs/architecture/implementation-plan.md). Third-party GPL repositories are reading material, not source to copy into MIT code.
+- An instruction being decoded as supported is **not** evidence of correct semantics. Add synthetic execution tests and compare CPU registers, CR/XER, memory, flags and branch behavior against an independent reference before marking fixed.
+- Never claim tests, compilation, game boot, HLE compatibility or an image on screen without actual measured evidence. Keep all game-derived binaries/output off Git and out of CI artifacts.
+- For PowerPC RPX on Windows, direct Ghidra with an RPX loader is authoritative; REA's Windows Ghidra admission does not cover these binaries. See [analysis guidance](docs/reverse-engineering/rea-guidance.md).

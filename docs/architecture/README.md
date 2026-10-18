@@ -1,7 +1,12 @@
 # Architecture
 
-> Nothing is decided yet. This folder will hold the sketches and decisions
-> that emerge from Phase 2 of the [roadmap](../../ROADMAP.md).
+> The port approach was accepted on 2026-10-18: static PowerPC-to-C recompilation + original Cafe OS HLE runtime, staged incrementally. See [ADR-0002](decisions/0002-port-approach.md).
+
+## Engineering gates
+
+- [Implementation and acceptance plan](implementation-plan.md)
+- [Source-level code audit](../audits/2026-10-18-code-audit.md)
+- [Comparative modern port research](../research/2026-10-native-port-patterns.md)
 
 ## Initial sketch (subject to change)
 
@@ -20,4 +25,4 @@ Significant decisions are recorded as short ADRs in `decisions/`:
 
 - [0001 — Use architecture decision records](decisions/0001-use-adr.md)
 - [0002 — Port approach: options and evaluation criteria](decisions/0002-port-approach.md)
-  (draft; decision deferred to Phase 2)
+  (accepted on 2026-10-18)

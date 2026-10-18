@@ -53,6 +53,15 @@ Read the full policy: [DISCLAIMER.md](DISCLAIMER.md) and
 | `tools/` | Original CLI tools: `tools/rpxinfo` (RPX/RPL inspector) and `tools/ppcx` (PowerPC → C recompiler prototype) |
 | `src/` | Original runtime code (`src/runtime`: memory model, dispatch, HLE layer) |
 
+## Engineering review and current development gates
+
+- [Modern native-port comparison](docs/research/2026-10-native-port-patterns.md)
+- [2026-10-18 correctness audit](docs/audits/2026-10-18-code-audit.md)
+- [Stabilization/implementation plan](docs/architecture/implementation-plan.md)
+- [REA and direct Ghidra guidance](docs/reverse-engineering/rea-guidance.md)
+
+The current ~97% decoded-instruction coverage is **not** 97% behavioral correctness or game compatibility. The prototype does not boot a playable game; section loading, Cafe OS services, and GPU presentation are unfinished. Known PowerPC semantic defects must be verified and fixed before claiming first-light progress.
+
 ## Legal
 
 *The Legend of Zelda* and *Breath of the Wild* are trademarks of Nintendo.

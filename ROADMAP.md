@@ -65,6 +65,16 @@ Deliverable: `docs/research/` notes and format specs.
 
 Deliverable: `docs/architecture/` decision record.
 
+## Phase 2 stabilization gate — mandatory before first light
+
+- [ ] Resolve source-level PowerPC semantic defects PPC-001..PPC-009, each with a failing synthetic regression first.
+- [ ] Compile and execute generated C against a separate reference oracle; measure state/memory correctness, not only opcode decode counts.
+- [ ] Implement authenticated RPX section/data image, relocation handling, memory checks and typed, non-silent Cafe OS HLE.
+- [ ] Establish deterministic headless boot checkpoints, content-addressed analysis caches and scalable generated-C shards.
+- [ ] Configure PR CI and test on local, user-owned dumps without uploading derived Nintendo code.
+
+See the [audit](docs/audits/2026-10-18-code-audit.md), [implementation plan](docs/architecture/implementation-plan.md), and [comparative research](docs/research/2026-10-native-port-patterns.md).
+
 ## Phase 3 — First light
 
 - [ ] A minimal original runtime that loads a user's own data and renders
