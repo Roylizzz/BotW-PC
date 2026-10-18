@@ -27,6 +27,8 @@
 - [ ] Format notes: boot flow and resource formats (BYML, AAMP, SARC, BFRES,
       …) documented from public knowledge plus own observations.
       *(RPX/RPL documented in `docs/research/`; asset formats pending.)*
+- [x] Deep-analysis database of the executable (Ghidra census:
+      [`docs/research/2026-10-ghidra-census.md`](docs/research/2026-10-ghidra-census.md)).
 
 Deliverable: `docs/research/` notes and format specs.
 

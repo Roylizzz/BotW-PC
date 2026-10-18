@@ -36,6 +36,40 @@ Notes for tooling:
 | [Rizin](https://rizin.re/) | 0.9.1 | ✅ (multi-arch static disassembly) |
 | [Ghidra](https://ghidra-sre.org/) | 12.1.4 | ✅ installed locally + RPX/RPL loader extension (`CafeLoader`) |
 
+## Headless analysis recipe (reproducible)
+
+With the RPX/RPL loader installed, Ghidra detects the format by itself —
+do **not** pass `-loader`. A full pass over the 35 MiB `.text` took
+**~24 min** (1,427 s) on the 2-vCPU reference machine with a 3 GiB JVM
+heap; results are summarized in
+[`../research/2026-10-ghidra-census.md`](../research/2026-10-ghidra-census.md).
+
+```bash
+# quick look, no Ghidra needed
+node tools/rpxinfo/rpxinfo.js info    <your-copy>/code/U-King.rpx
+node tools/rpxinfo/rpxinfo.js symbols <your-copy>/code/U-King.rpx --func --limit 20
+
+# import + full auto-analysis, then a one-page summary
+analyzeHeadless <your-projects-dir> BotW \
+  -import <your-copy>/code/U-King.rpx \
+  -scriptPath tools/ghidra-scripts \
+  -postScript ListSummary.java
+
+# later: read-only passes on the analyzed program
+analyzeHeadless <your-projects-dir> BotW -process U-King.rpx -noanalysis -readOnly \
+  -scriptPath tools/ghidra-scripts \
+  -postScript ExportFunctions.java functions.csv
+analyzeHeadless <your-projects-dir> BotW -process U-King.rpx -noanalysis -readOnly \
+  -scriptPath tools/ghidra-scripts \
+  -postScript DecompileMatch.java 0x03C70404 entry.c
+```
+
+The helpers in [`tools/ghidra-scripts/`](../../tools/ghidra-scripts/) are
+generic (no game data): `ListSummary`, `ExportFunctions`,
+`DecompileMatch`, and `TuneAnalysis` (option tuning for headless runs).
+Decompiler output and project databases stay local — never commit them.
+
+
 ## Platform constraints (important)
 
 - REA's **Ghidra provider on Windows is an experimental read-only "P0"
