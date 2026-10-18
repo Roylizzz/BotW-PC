@@ -306,3 +306,61 @@ test("fres lives in opcode 59 and the estimate ops are supported", () => {
     assert.equal(ps.name, "ps_res");
     assert.equal(ps.supported, true);
 });
+
+test("decodes the signed mulli immediate", () => {
+    const d = decode(0x1c64ffff); // mulli r3, r4, 0xffff
+    assert.equal(d.name, "mulli");
+    assert.equal(d.imm, -1);
+    assert.equal(d.uimm, 0xffff);
+});
+
+test("cmpli and cmpi keep both immediate views", () => {
+    const l = decode(0x2803ffff); // cmpli cr0, r3, 0xffff
+    assert.equal(l.name, "cmpli");
+    assert.equal(l.uimm, 0xffff);
+    assert.equal(l.imm, -1);
+    const i = decode(0x2c03ffff); // cmpi cr0, r3, -1
+    assert.equal(i.name, "cmpi");
+    assert.equal(i.imm, -1);
+});
+
+test("bc carries the link bit", () => {
+    const d = decode(0x40820021); // bcl 4, 2, +32
+    assert.equal(d.branch, "bc");
+    assert.equal(d.name, "bcl");
+    assert.equal(d.lk, true);
+    assert.equal(d.bd, 32);
+});
+
+test("the OE field is only reported for real XO-form instructions", () => {
+    // Bit 10 belongs to the extended opcode of X-form instructions: srw (536)
+    // and extsb (954) both have it set and must not report an OE field.
+    const srw = decode((31 << 26) | (1 << 21) | (2 << 16) | (3 << 11) | (536 << 1));
+    assert.equal(srw.name, "srw");
+    assert.equal(srw.oe, undefined);
+    assert.equal(srw.form, "X");
+    const extsb = decode((31 << 26) | (4 << 21) | (3 << 16) | (954 << 1));
+    assert.equal(extsb.name, "extsb");
+    assert.equal(extsb.oe, undefined);
+    const add = decode((31 << 26) | (3 << 21) | (3 << 16) | (4 << 11) | (266 << 1));
+    assert.equal(add.oe, false);
+    assert.equal(add.form, "XO");
+});
+
+test("XO-form instructions with OE = 1 decode instead of trapping", () => {
+    // addo r3, r3, r4: bit 10 is OE, so the 10-bit field reads 778, not 266.
+    const d = decode(0x7c632614);
+    assert.equal(d.name, "add");
+    assert.equal(d.oe, true);
+    assert.equal(d.rt, 3);
+    assert.equal(d.ra, 3);
+    assert.equal(d.rb, 4);
+    const mullwo = decode((31 << 26) | (3 << 21) | (3 << 16) | (4 << 11) | (235 << 1) | (1 << 10));
+    assert.equal(mullwo.name, "mullw");
+    assert.equal(mullwo.oe, true);
+    // mulhw has no OE field: an OE=1 encoding stays undecoded rather than
+    // silently becoming a different instruction.
+    const bad = decode((31 << 26) | (3 << 21) | (3 << 16) | (4 << 11) | (75 << 1) | (1 << 10));
+    assert.equal(bad.supported, false);
+    assert.equal(bad.name, "op31-xo587");
+});

@@ -102,25 +102,28 @@ const LOADSTORE = {
     55: { name: "stfdu", kind: "store", access: "f64", update: true },
 };
 
-// opcode 31: X-form and XO-form
+// opcode 31: X-form and XO-form.
+// `oe: true` marks the instructions that actually have the OE (overflow
+// enable) bit at position 10. For the other X-form instructions bit 10 is
+// part of the extended opcode, so reporting it as OE would be noise.
 const X31 = {
     // arithmetic (XO-form; OE bit at 10, Rc at 0)
-    266: { name: "add" },
-    10: { name: "addc" },
-    138: { name: "adde" },
-    234: { name: "addme" },
-    202: { name: "addze" },
-    40: { name: "subf" },
-    8: { name: "subfc" },
-    136: { name: "subfe" },
-    232: { name: "subfme" },
-    200: { name: "subfze" },
-    104: { name: "neg" },
-    235: { name: "mullw" },
+    266: { name: "add", oe: true },
+    10: { name: "addc", oe: true },
+    138: { name: "adde", oe: true },
+    234: { name: "addme", oe: true },
+    202: { name: "addze", oe: true },
+    40: { name: "subf", oe: true },
+    8: { name: "subfc", oe: true },
+    136: { name: "subfe", oe: true },
+    232: { name: "subfme", oe: true },
+    200: { name: "subfze", oe: true },
+    104: { name: "neg", oe: true },
+    235: { name: "mullw", oe: true },
     75: { name: "mulhw" },
     11: { name: "mulhwu" },
-    491: { name: "divw" },
-    459: { name: "divwu" },
+    491: { name: "divw", oe: true },
+    459: { name: "divwu", oe: true },
     // logical
     28: { name: "and" },
     60: { name: "andc" },
@@ -390,14 +393,16 @@ function decode(word) {
         };
     }
     if (op === 16) {
+        const lk = LK_BIT(w);
         return {
             ...base,
-            name: "bc",
+            name: lk ? "bcl" : "bc",
             form: "B",
             bo: BO(w),
             bi: BI(w),
             bd: BD_SIGN(w),
             aa: (w >>> 1) & 1,
+            lk,
             branch: "bc",
             supported: true,
         };
@@ -437,7 +442,20 @@ function decode(word) {
     // --- opcode 31 ---
     if (op === 31) {
         const xo = XO10(w);
-        const info = X31[xo];
+        // XO-form instructions keep their 9-bit extended opcode in bits 1..9
+        // and put OE in bit 10, so an OE=1 form is not found by the 10-bit
+        // lookup above; retry with the OE bit masked off. X-form instructions
+        // whose 10-bit XO happens to have bit 9 set (srw, sraw, extsb, ...) are
+        // found directly and never reach this path.
+        let info = X31[xo];
+        let oeForm = false;
+        if (!info && (xo & 0x200) !== 0) {
+            const masked = X31[xo & 0x1ff];
+            if (masked && masked.oe) {
+                info = masked;
+                oeForm = true;
+            }
+        }
         if (!info) return { ...base, name: `op31-xo${xo}`, supported: false, unknownOpcode: true };
 
         if (info.trap) {
@@ -503,19 +521,21 @@ function decode(word) {
         if (info.name === "dcbf" || info.name === "dcbst" || info.name === "dcbz") {
             return { ...base, name: info.name, form: "X", ra: RA(w), rb: RB(w), supported: true };
         }
-        // register-form arithmetic / logical / shift / unary
-        return {
+        // register-form arithmetic / logical / shift / unary.
+        // Only the XO-form instructions carry a real OE field.
+        const d = {
             ...base,
             name: info.name,
-            form: "XO",
+            form: info.oe ? "XO" : "X",
             rt: RT(w),
             ra: RA(w),
             rb: RB(w),
             sh: SH(w),
             rc: RC_BIT(w),
-            oe: OE_BIT(w),
             supported: true,
         };
+        if (info.oe) d.oe = oeForm ? true : OE_BIT(w);
+        return d;
     }
 
     // --- floating point ---

@@ -128,7 +128,28 @@ function translateFunction(opts) {
     const emit = (s) => lines.push(`    ${s}`);
     const emitRaw = (s) => lines.push(s);
 
+    /* Emits a nested block: runs `body` and indents everything it emitted. */
+    const emitBlock = (body) => {
+        const saved = lines.length;
+        body();
+        for (let i = saved; i < lines.length; i++) lines[i] = `    ${lines[i]}`;
+    };
+
+    /* OE forms of the XO instructions: the operands are captured before the
+     * result store because rT may alias rA or rB, and the overflow is defined
+     * by the original operand values. `capture` declares the locals that
+     * `result` and `ovExpr` use. */
+    const emitOe = (capture, result, ovExpr) => {
+        emit("{");
+        emit(`    ${capture}`);
+        emit(`    ${result}`);
+        emit(`    ppcx_set_ov(c, ${ovExpr});`);
+        emit("}");
+    };
+
     const immHex = (ins) => u32hex(ins.imm);
+    /* cmpli takes its immediate as an unsigned halfword. */
+    const uimmHex = (ins) => `0x${(ins.uimm >>> 0).toString(16)}u`;
     const dEA = (ins) => (ins.ra === 0 ? immHex(ins) : `(u32)(${g(ins.ra)} + ${immHex(ins)})`);
     const xEA = (ins) => (ins.ra === 0 ? g(ins.rb) : `(u32)(${g(ins.ra)} + ${g(ins.rb)})`);
 
@@ -214,6 +235,19 @@ function translateFunction(opts) {
         callees.set(target, rec);
     }
 
+    /* Emits the call body for a branch whose return address has already been
+     * written into LR (bl, bcl). `addCallee` records the target; when the
+     * callee has no body in this translation unit it is dispatched or
+     * reported at run time. */
+    function emitLinkedCall(target) {
+        const inText = target >= textBase && target < textEnd;
+        addCallee(target, "bl");
+        if (!emitSet.has(target)) externalTargets.add(target);
+        if (emitSet.has(target)) emit(`${fnName(target)}(c);`);
+        else if (inText) emit(`PPCX_DISPATCH(c, ${addrHex(target)});`);
+        else emit(`PPCX_CALL_UNKNOWN(c, ${addrHex(target)});`);
+    }
+
     function emitCallExternal(ins, target, kind) {
         const ret = addrHex(ins.addr + 4);
         addCallee(target, kind);
@@ -221,9 +255,7 @@ function translateFunction(opts) {
         const inText = target >= textBase && target < textEnd;
         if (kind === "bl") {
             emit(`c->lr = ${ret};`);
-            if (emitSet.has(target)) emit(`${fnName(target)}(c);`);
-            else if (inText) emit(`PPCX_DISPATCH(c, ${addrHex(target)});`);
-            else emit(`PPCX_CALL_UNKNOWN(c, ${addrHex(target)});`);
+            emitLinkedCall(target);
             return false;
         }
         // Tail branch.
@@ -317,22 +349,55 @@ function translateFunction(opts) {
         if (ins.branch === "bc") {
             const target = branchTarget(ins);
             const uncond = (ins.bo & 0x14) === 0x14;
+            const cond = `ppcx_bc(c, ${u32hex(ins.bo)}, ${u32hex(ins.bi)})`;
+            const lk = ins.lk === true;
+
             if (target >= start && target < end) {
+                if (lk) {
+                    /* bcl to a mid-function label: the target has no C body,
+                     * so hand it to the runtime dispatcher with LR set. */
+                    warnings.push(`bcl inside the function body (0x${hex8(target)}); dispatched at runtime`);
+                    if (uncond) {
+                        emit(`c->lr = ${addrHex(ins.addr + 4)};`);
+                        emit(`PPCX_DISPATCH(c, ${addrHex(target)});`);
+                    } else {
+                        emit(`if (${cond}) {`);
+                        emit(`    c->lr = ${addrHex(ins.addr + 4)};`);
+                        emit(`    PPCX_DISPATCH(c, ${addrHex(target)});`);
+                        emit("}");
+                    }
+                    continue;
+                }
                 if (uncond) {
                     emit(`goto ${labelName(target)};`);
                 } else {
-                    emit(`if (ppcx_bc(c, ${u32hex(ins.bo)}, ${u32hex(ins.bi)})) goto ${labelName(target)};`);
+                    emit(`if (${cond}) goto ${labelName(target)};`);
                 }
                 lastTransfer = uncond;
                 continue;
             }
+
+            if (lk) {
+                /* Branch conditional and link: LR is written only when the
+                 * branch is taken, then the target runs as a call. */
+                if (uncond) {
+                    emit(`c->lr = ${addrHex(ins.addr + 4)};`);
+                    emitLinkedCall(target);
+                } else {
+                    emit(`if (${cond}) {`);
+                    emit(`    c->lr = ${addrHex(ins.addr + 4)};`);
+                    emitBlock(() => emitLinkedCall(target));
+                    emit("}");
+                }
+                lastTransfer = false; /* a call returns to the next instruction */
+                continue;
+            }
+
             if (uncond) {
                 lastTransfer = emitTailExternal(ins, target);
             } else {
-                emit(`if (ppcx_bc(c, ${u32hex(ins.bo)}, ${u32hex(ins.bi)})) {`);
-                const saved = lines.length;
-                emitTailExternal(ins, target);
-                for (let i = saved; i < lines.length; i++) lines[i] = `    ${lines[i]}`;
+                emit(`if (${cond}) {`);
+                emitBlock(() => emitTailExternal(ins, target));
                 emit("}");
                 lastTransfer = false; // conditional: control may fall through
             }
@@ -385,22 +450,25 @@ function translateFunction(opts) {
             case "nop":
                 continue;
             case "mulli":
-                emit(`${g(ins.rt)} = ${g(ins.ra)} * 0x${(ins.imm & 0xffff).toString(16)}u;`);
-                rcExpr = g(ins.rt);
+                /* The D-form mulli immediate is signed, unlike the unsigned
+                 * logical immediates of the ori family. */
+                emit(`${g(ins.rt)} = (u32)((s64)(s32)${g(ins.ra)} * (s64)(s32)${immHex(ins)});`);
                 break;
             case "subfic":
-                emit(`ppcx_subfic(c, ${ins.rt}, ${ins.ra === 0 ? "0u" : g(ins.ra)}, ${immHex(ins)});`);
+                /* RA = 0 selects r0 itself here (unlike addi/addis, where
+                 * RA = 0 means the literal zero). */
+                emit(`ppcx_subfic(c, ${ins.rt}, ${g(ins.ra)}, ${immHex(ins)});`);
                 break;
             case "cmpi":
-                emit(`ppcx_cmp(c, ${ins.crf}, ${ins.ra === 0 ? "0u" : g(ins.ra)}, ${immHex(ins)});`);
+                emit(`ppcx_cmp(c, ${ins.crf}, ${g(ins.ra)}, ${immHex(ins)});`);
                 break;
             case "cmpli":
-                emit(`ppcx_cmpl(c, ${ins.crf}, ${ins.ra === 0 ? "0u" : g(ins.ra)}, ${immHex(ins)});`);
+                emit(`ppcx_cmpl(c, ${ins.crf}, ${g(ins.ra)}, ${uimmHex(ins)});`);
                 break;
             case "addic":
             case "addic.":
-                emit(`ppcx_addic(c, ${ins.rt}, ${ins.ra === 0 ? "0u" : g(ins.ra)}, ${immHex(ins)});`);
-                if (ins.name.endsWith(".")) emit(`ppcx_cr0(c, ${g(ins.rt)});`);
+                emit(`ppcx_addic(c, ${ins.rt}, ${g(ins.ra)}, ${immHex(ins)});`);
+                if (ins.name === "addic.") emit(`ppcx_cr0(c, ${g(ins.rt)});`);
                 break;
             case "addi":
             case "addis": {
@@ -507,51 +575,151 @@ function translateFunction(opts) {
 
             // ------------------------------------------------- opcode 31 (X)
             case "add":
-                emit(`${g(ins.rt)} = ${g(ins.ra)} + ${g(ins.rb)};`);
+                if (ins.oe) {
+                    emitOe(
+                        `u32 x = ${g(ins.ra)}, y = ${g(ins.rb)};`,
+                        `${g(ins.rt)} = x + y;`,
+                        `ppcx_ov_add(x, y, ${g(ins.rt)})`
+                    );
+                } else {
+                    emit(`${g(ins.rt)} = ${g(ins.ra)} + ${g(ins.rb)};`);
+                }
                 rcExpr = g(ins.rt);
                 break;
             case "addc":
-                emit(`ppcx_addc(c, ${ins.rt}, ${g(ins.ra)}, ${g(ins.rb)});`);
+                if (ins.oe) {
+                    emitOe(
+                        `u32 x = ${g(ins.ra)}, y = ${g(ins.rb)};`,
+                        `ppcx_addc(c, ${ins.rt}, x, y);`,
+                        `ppcx_ov_add(x, y, ${g(ins.rt)})`
+                    );
+                } else {
+                    emit(`ppcx_addc(c, ${ins.rt}, ${g(ins.ra)}, ${g(ins.rb)});`);
+                }
                 rcExpr = g(ins.rt);
                 break;
             case "adde":
-                emit(`ppcx_adde(c, ${ins.rt}, ${g(ins.ra)}, ${g(ins.rb)});`);
+                if (ins.oe) {
+                    emitOe(
+                        `u32 x = ${g(ins.ra)}, y = ${g(ins.rb)};`,
+                        `ppcx_adde(c, ${ins.rt}, x, y);`,
+                        `ppcx_ov_add(x, y, ${g(ins.rt)})`
+                    );
+                } else {
+                    emit(`ppcx_adde(c, ${ins.rt}, ${g(ins.ra)}, ${g(ins.rb)});`);
+                }
                 rcExpr = g(ins.rt);
                 break;
             case "addme":
-                emit(`ppcx_addme(c, ${ins.rt}, ${g(ins.ra)});`);
+                if (ins.oe) {
+                    emitOe(
+                        `u32 x = ${g(ins.ra)};`,
+                        `ppcx_addme(c, ${ins.rt}, x);`,
+                        `ppcx_ov_add(x, 0xffffffffu, ${g(ins.rt)})`
+                    );
+                } else {
+                    emit(`ppcx_addme(c, ${ins.rt}, ${g(ins.ra)});`);
+                }
                 rcExpr = g(ins.rt);
                 break;
             case "addze":
-                emit(`ppcx_addze(c, ${ins.rt}, ${g(ins.ra)});`);
+                if (ins.oe) {
+                    emitOe(
+                        `u32 x = ${g(ins.ra)};`,
+                        `ppcx_addze(c, ${ins.rt}, x);`,
+                        `ppcx_ov_add(x, 0u, ${g(ins.rt)})`
+                    );
+                } else {
+                    emit(`ppcx_addze(c, ${ins.rt}, ${g(ins.ra)});`);
+                }
                 rcExpr = g(ins.rt);
                 break;
             case "subf":
-                emit(`${g(ins.rt)} = ${g(ins.rb)} - ${g(ins.ra)};`);
+                if (ins.oe) {
+                    emitOe(
+                        `u32 x = ${g(ins.ra)}, y = ${g(ins.rb)};`,
+                        `${g(ins.rt)} = y - x;`,
+                        `ppcx_ov_add(~x, y, ${g(ins.rt)})`
+                    );
+                } else {
+                    emit(`${g(ins.rt)} = ${g(ins.rb)} - ${g(ins.ra)};`);
+                }
                 rcExpr = g(ins.rt);
                 break;
             case "subfc":
-                emit(`ppcx_subfc(c, ${ins.rt}, ${g(ins.ra)}, ${g(ins.rb)});`);
+                if (ins.oe) {
+                    emitOe(
+                        `u32 x = ${g(ins.ra)}, y = ${g(ins.rb)};`,
+                        `ppcx_subfc(c, ${ins.rt}, x, y);`,
+                        `ppcx_ov_add(~x, y, ${g(ins.rt)})`
+                    );
+                } else {
+                    emit(`ppcx_subfc(c, ${ins.rt}, ${g(ins.ra)}, ${g(ins.rb)});`);
+                }
                 rcExpr = g(ins.rt);
                 break;
             case "subfe":
-                emit(`ppcx_subfe(c, ${ins.rt}, ${g(ins.ra)}, ${g(ins.rb)});`);
+                if (ins.oe) {
+                    emitOe(
+                        `u32 x = ${g(ins.ra)}, y = ${g(ins.rb)};`,
+                        `ppcx_subfe(c, ${ins.rt}, x, y);`,
+                        `ppcx_ov_add(~x, y, ${g(ins.rt)})`
+                    );
+                } else {
+                    emit(`ppcx_subfe(c, ${ins.rt}, ${g(ins.ra)}, ${g(ins.rb)});`);
+                }
                 rcExpr = g(ins.rt);
                 break;
             case "subfme":
-                emit(`ppcx_subfme(c, ${ins.rt}, ${g(ins.ra)});`);
+                if (ins.oe) {
+                    emitOe(
+                        `u32 x = ${g(ins.ra)};`,
+                        `ppcx_subfme(c, ${ins.rt}, x);`,
+                        `ppcx_ov_add(~x, 0xffffffffu, ${g(ins.rt)})`
+                    );
+                } else {
+                    emit(`ppcx_subfme(c, ${ins.rt}, ${g(ins.ra)});`);
+                }
                 rcExpr = g(ins.rt);
                 break;
             case "subfze":
-                emit(`ppcx_subfze(c, ${ins.rt}, ${g(ins.ra)});`);
+                if (ins.oe) {
+                    emitOe(
+                        `u32 x = ${g(ins.ra)};`,
+                        `ppcx_subfze(c, ${ins.rt}, x);`,
+                        `ppcx_ov_add(~x, 0u, ${g(ins.rt)})`
+                    );
+                } else {
+                    emit(`ppcx_subfze(c, ${ins.rt}, ${g(ins.ra)});`);
+                }
                 rcExpr = g(ins.rt);
                 break;
             case "neg":
-                emit(`ppcx_neg(c, ${ins.rt}, ${g(ins.ra)});`);
+                if (ins.oe) {
+                    /* The references set OV only for the most negative value
+                     * (there is no add-like operand pair to test). */
+                    emitOe(
+                        `u32 x = ${g(ins.ra)};`,
+                        `ppcx_neg(c, ${ins.rt}, x);`,
+                        "x == 0x80000000u"
+                    );
+                } else {
+                    emit(`ppcx_neg(c, ${ins.rt}, ${g(ins.ra)});`);
+                }
                 rcExpr = g(ins.rt);
                 break;
             case "mullw":
-                emit(`${g(ins.rt)} = ${g(ins.ra)} * ${g(ins.rb)};`);
+                if (ins.oe) {
+                    /* OE form: the overflow is a width property of the full
+                     * 64-bit product, so compute it before truncating. */
+                    emit("{");
+                    emit(`    s64 t = (s64)(s32)${g(ins.ra)} * (s64)(s32)${g(ins.rb)};`);
+                    emit(`    ${g(ins.rt)} = (u32)t;`);
+                    emit(`    ppcx_set_ov(c, (s64)(s32)${g(ins.rt)} != t);`);
+                    emit("}");
+                } else {
+                    emit(`${g(ins.rt)} = ${g(ins.ra)} * ${g(ins.rb)};`);
+                }
                 rcExpr = g(ins.rt);
                 break;
             case "mulhw":
@@ -563,11 +731,11 @@ function translateFunction(opts) {
                 rcExpr = g(ins.rt);
                 break;
             case "divw":
-                emit(`${g(ins.rt)} = ppcx_divw(${g(ins.ra)}, ${g(ins.rb)});`);
+                emit(`ppcx_divw(c, ${ins.rt}, ${g(ins.ra)}, ${g(ins.rb)}, ${ins.oe ? 1 : 0});`);
                 rcExpr = g(ins.rt);
                 break;
             case "divwu":
-                emit(`${g(ins.rt)} = ppcx_divwu(${g(ins.ra)}, ${g(ins.rb)});`);
+                emit(`ppcx_divwu(c, ${ins.rt}, ${g(ins.ra)}, ${g(ins.rb)}, ${ins.oe ? 1 : 0});`);
                 rcExpr = g(ins.rt);
                 break;
             case "and":
@@ -611,11 +779,11 @@ function translateFunction(opts) {
                 rcExpr = g(ins.ra);
                 break;
             case "sraw":
-                emit(`${g(ins.ra)} = ppcx_sraw(${g(ins.rt)}, ${g(ins.rb)});`);
+                emit(`ppcx_sraw(c, ${ins.ra}, ${g(ins.rt)}, ${g(ins.rb)});`);
                 rcExpr = g(ins.ra);
                 break;
             case "srawi":
-                emit(`${g(ins.ra)} = ppcx_srawi(${g(ins.rt)}, ${ins.sh}u);`);
+                emit(`ppcx_srawi(c, ${ins.ra}, ${g(ins.rt)}, ${ins.sh}u);`);
                 rcExpr = g(ins.ra);
                 break;
             case "cntlzw":
@@ -660,6 +828,9 @@ function translateFunction(opts) {
                 break;
             case "sync":
                 emit("PPCX_FENCE_SYNC();");
+                break;
+            case "lwsync":
+                emit("PPCX_FENCE_LWSYNC();");
                 break;
             case "eieio":
                 emit("PPCX_FENCE_EIEIO();");
@@ -913,7 +1084,9 @@ function translateFunction(opts) {
             }
         }
 
-        if (rcExpr !== null) emit(`ppcx_cr0(c, ${rcExpr});`);
+        /* CR0 is updated only when the instruction's record bit is set. The
+         * XO-form Rc bit and the D-form addic. dot are handled above. */
+        if (rcExpr !== null && ins.rc === true) emit(`ppcx_cr0(c, ${rcExpr});`);
     }
 
     if (!lastTransfer) {

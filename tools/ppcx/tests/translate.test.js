@@ -239,3 +239,97 @@ test("reciprocal estimates lower to the exact-value helpers", () => {
         /PPCX_SET_PS2\(c->fpr\[5\], \(float\)ppcx_res_d\(c->fpr\[6\]\.ps0\.d\), \(float\)ppcx_res_d\(c->fpr\[6\]\.ps1\.d\)\);/
     );
 });
+
+test("mulli sign-extends the immediate and ignores CR0", () => {
+    const r = translate([0x1c64ffff, 0x4e800020]); // mulli r3, r4, -1
+    assert.match(r.code, /c->gpr\[3\] = \(u32\)\(\(s64\)\(s32\)c->gpr\[4\] \* \(s64\)\(s32\)0xffffffffu\);/);
+    assert.doesNotMatch(r.code, /ppcx_cr0/);
+    assert.equal(r.unsupported.length, 0);
+});
+
+test("addic/addic. read r0 literally; only addic. writes CR0", () => {
+    const plain = translate([0x30600005, 0x4e800020]); // addic r3, r0, 5
+    assert.match(plain.code, /ppcx_addic\(c, 3, c->gpr\[0\], 0x5u\);/);
+    assert.doesNotMatch(plain.code, /ppcx_cr0/);
+    const dot = translate([0x34600005, 0x4e800020]); // addic. r3, r0, 5
+    assert.match(dot.code, /ppcx_addic\(c, 3, c->gpr\[0\], 0x5u\);/);
+    assert.match(dot.code, /ppcx_cr0\(c, c->gpr\[3\]\);/);
+});
+
+test("subfic reads r0 literally", () => {
+    const r = translate([0x20600001, 0x4e800020]); // subfic r3, r0, 1
+    assert.match(r.code, /ppcx_subfic\(c, 3, c->gpr\[0\], 0x1u\);/);
+});
+
+test("cmpi and cmpli read r0 literally; cmpli keeps the unsigned halfword", () => {
+    const cmpi = translate([0x2c00ffff, 0x4e800020]); // cmpi cr0, r0, -1
+    assert.match(cmpi.code, /ppcx_cmp\(c, 0, c->gpr\[0\], 0xffffffffu\);/);
+    const cmpli = translate([0x2803ffff, 0x4e800020]); // cmpli cr0, r3, 0xffff
+    assert.match(cmpli.code, /ppcx_cmpl\(c, 0, c->gpr\[3\], 0xffffu\);/);
+    assert.doesNotMatch(cmpli.code, /0xffffffffu/);
+});
+
+test("arithmetic without Rc does not write CR0", () => {
+    const r = translate([0x7c632214, 0x4e800020]); // add r3, r3, r4
+    assert.match(r.code, /c->gpr\[3\] = c->gpr\[3\] \+ c->gpr\[4\];/);
+    assert.doesNotMatch(r.code, /ppcx_cr0/);
+});
+
+test("OE forms capture operands before the store (rT may alias rA/rB)", () => {
+    const add = translate([0x7c632614, 0x4e800020]); // addo r3, r3, r4
+    assert.match(add.code, /u32 x = c->gpr\[3\], y = c->gpr\[4\];/);
+    assert.match(add.code, /c->gpr\[3\] = x \+ y;/);
+    assert.match(add.code, /ppcx_set_ov\(c, ppcx_ov_add\(x, y, c->gpr\[3\]\)\);/);
+    const subf = translate([
+        (31 << 26) | (3 << 21) | (3 << 16) | (4 << 11) | (40 << 1) | (1 << 10),
+        0x4e800020,
+    ]); // subfo r3, r3, r4
+    assert.match(subf.code, /u32 x = c->gpr\[3\], y = c->gpr\[4\];/);
+    assert.match(subf.code, /c->gpr\[3\] = y - x;/);
+    assert.match(subf.code, /ppcx_ov_add\(~x, y, c->gpr\[3\]\)/);
+});
+
+test("nego sets OV only for the most negative operand", () => {
+    // nego r3, r3: both references set OV iff rA == 0x80000000.
+    const r = translate([
+        (31 << 26) | (3 << 21) | (3 << 16) | (0 << 11) | (104 << 1) | (1 << 10),
+        0x4e800020,
+    ]);
+    assert.match(r.code, /u32 x = c->gpr\[3\];/);
+    assert.match(r.code, /ppcx_neg\(c, 3, x\);/);
+    assert.match(r.code, /ppcx_set_ov\(c, x == 0x80000000u\);/);
+});
+
+test("lwsync lowers to the lightweight fence", () => {
+    const r = translate([0x7c2004ac, 0x4e800020]);
+    assert.match(r.code, /PPCX_FENCE_LWSYNC\(\);/);
+    assert.equal(r.unsupported.length, 0);
+});
+
+test("bcl writes LR and calls the target only when the condition holds", () => {
+    const startSet = [0x2000, 0x3000];
+    const emitSet = [0x2000, 0x3000];
+    const r = translate([0x40821001, 0x4e800020], { base: 0x2000, startSet, emitSet, textEnd: 0x4000 }); // bcl 4, 2, +0x1000
+    assert.match(r.code, /if \(ppcx_bc\(c, 0x4u, 0x2u\)\) \{/);
+    assert.match(r.code, /c->lr = 0x00002004u;/);
+    assert.match(r.code, /f_00003000\(c\);/);
+    assert.equal(r.callees.length, 1);
+    assert.equal(r.callees[0].addr, 0x3000);
+});
+
+test("divw/divwu pass the OE bit to the helpers", () => {
+    const divw = translate([
+        (31 << 26) | (3 << 21) | (4 << 16) | (5 << 11) | (491 << 1) | (1 << 10),
+        0x4e800020,
+    ]);
+    assert.match(divw.code, /ppcx_divw\(c, 3, c->gpr\[4\], c->gpr\[5\], 1\);/);
+    const divwu = translate([(31 << 26) | (3 << 21) | (4 << 16) | (5 << 11) | (459 << 1), 0x4e800020]);
+    assert.match(divwu.code, /ppcx_divwu\(c, 3, c->gpr\[4\], c->gpr\[5\], 0\);/);
+});
+
+test("sraw and srawi use the destination/source helper signatures", () => {
+    const sraw = translate([(31 << 26) | (4 << 21) | (3 << 16) | (5 << 11) | (792 << 1), 0x4e800020]);
+    assert.match(sraw.code, /ppcx_sraw\(c, 3, c->gpr\[4\], c->gpr\[5\]\);/);
+    const srawi = translate([(31 << 26) | (4 << 21) | (3 << 16) | (5 << 11) | (824 << 1), 0x4e800020]);
+    assert.match(srawi.code, /ppcx_srawi\(c, 3, c->gpr\[4\], 5u\);/);
+});

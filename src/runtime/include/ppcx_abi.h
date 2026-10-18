@@ -161,28 +161,31 @@ static inline void ppcx_stmw(Cpu *c, u32 ea, u32 rs) {
 }
 
 /*
- * String load/store (lswi/stswi). Byte n goes to/from bits 24..31 of its
- * register, the next bytes move to lower bit positions, and register
- * numbers wrap from r31 to r0 (ISA pseudocode). NB = 0 moves 32 bytes.
+ * String load/store (lswi/stswi). The byte stream advances one register per
+ * 4-byte group (not per byte): byte 0 of a group goes to/from bits 24..31 of
+ * the register and the rest move to lower bit positions; a final partial
+ * group leaves the remaining byte positions zero (load) and is not read
+ * (store). Register numbers wrap from r31 to r0 and NB = 0 moves 32 bytes.
+ * This matches the reference interpreter's lswi/stswi loops.
  */
 static inline void ppcx_lswi(Cpu *c, u32 ea, u32 rt, u32 nb) {
-    u32 n = nb ? nb : 32u;
+    const u32 n = nb ? nb : 32u;
     u32 r = (rt - 1u) & 31u;
     for (u32 i = 0; i < n; i++) {
-        if (r == 31u) r = 0u;
-        else r++;
-        if ((i & 3u) == 0u) c->gpr[r] = 0u;
+        if ((i & 3u) == 0u) {
+            r = (r + 1u) & 31u;
+            c->gpr[r] = 0u;
+        }
         c->gpr[r] |= (u32)ppcx_rd8(ea) << (24u - 8u * (i & 3u));
         ea += 1u;
     }
 }
 
 static inline void ppcx_stswi(Cpu *c, u32 ea, u32 rs, u32 nb) {
-    u32 n = nb ? nb : 32u;
+    const u32 n = nb ? nb : 32u;
     u32 r = (rs - 1u) & 31u;
     for (u32 i = 0; i < n; i++) {
-        if (r == 31u) r = 0u;
-        else r++;
+        if ((i & 3u) == 0u) r = (r + 1u) & 31u;
         ppcx_wr8(ea, (u8)(c->gpr[r] >> (24u - 8u * (i & 3u))));
         ea += 1u;
     }
@@ -300,10 +303,18 @@ static inline u32 ppcx_rotl32(u32 v, u32 n) {
     return n ? ((v << n) | (v >> (32u - n))) : v;
 }
 
+/*
+ * Rotation mask for rlwinm/rlwimi/rlwnm: ones from bit MB through bit ME,
+ * counted from the most significant bit, wrapping through bit 31 back to
+ * bit 0. This is the construction the reference emulator uses; a bit-by-bit
+ * model of the ISA definition agrees with it for all 1024 (MB, ME) pairs
+ * while the previous rotate-by-MB form was wrong for 962 of them.
+ */
 static inline u32 ppcx_mask_mb_me(u32 mb, u32 me) {
-    u32 m = (me - mb) & 31u;
-    u32 x = (m == 31u) ? 0xffffffffu : ((2u << m) - 1u);
-    return ppcx_rotl32(x, mb);
+    const u32 begin = 0xffffffffu >> (mb & 31u);
+    const u32 end = 0x7fffffffu >> (me & 31u);
+    const u32 mask = begin ^ end;
+    return ((me & 31u) < (mb & 31u)) ? ~mask : mask;
 }
 
 static inline u32 ppcx_rlwinm(u32 v, u32 sh, u32 mb, u32 me) {
@@ -325,16 +336,29 @@ static inline u32 ppcx_srw(u32 v, u32 n) {
     return (n > 31u) ? 0u : (v >> n);
 }
 
-static inline u32 ppcx_sraw(u32 v, u32 n) {
+/*
+ * sraw/srawi. Value and carry follow the ISA: the carry bit is set only when
+ * the value is negative and a non-zero bit is shifted out; shift amounts of
+ * zero never set CA, and amounts of 32..63 produce the sign fill with
+ * CA = sign of the value.
+ */
+static inline void ppcx_sraw(Cpu *c, u32 d, u32 v, u32 n) {
     n &= 63u;
-    if (n == 0u) return v;
-    if (n > 31u) return (v & 0x80000000u) ? 0xffffffffu : 0u;
-    return (u32)(((s32)v) >> n);
+    int ca;
+    if (n > 31u) {
+        ca = (v >> 31) != 0u;
+        c->gpr[d] = ca ? 0xffffffffu : 0u;
+    } else {
+        c->gpr[d] = (u32)(((s32)v) >> n);
+        ca = n != 0u && (v >> 31) != 0u && ((v << (32u - n)) != 0u);
+    }
+    c->xer = (c->xer & ~PPCX_XER_CA) | (ca ? PPCX_XER_CA : 0u);
 }
 
-static inline u32 ppcx_srawi(u32 v, u32 sh) {
-    if (sh == 0u) return v;
-    return (u32)(((s32)v) >> sh);
+static inline void ppcx_srawi(Cpu *c, u32 d, u32 v, u32 sh) {
+    c->gpr[d] = (u32)(((s32)v) >> sh);
+    const int ca = sh != 0u && (v >> 31) != 0u && ((v << (32u - sh)) != 0u);
+    c->xer = (c->xer & ~PPCX_XER_CA) | (ca ? PPCX_XER_CA : 0u);
 }
 
 static inline u32 ppcx_cntlzw(u32 v) {
@@ -458,26 +482,50 @@ static inline void ppcx_subfic(Cpu *c, u32 d, u32 a, u32 imm) {
     c->xer = (c->xer & ~PPCX_XER_CA) | ((t >> 32) ? PPCX_XER_CA : 0u);
 }
 
+/*
+ * neg: value only. The ISA does not update XER.CA for neg (the reference
+ * interpreter leaves CA untouched), so neither do we.
+ */
 static inline void ppcx_neg(Cpu *c, u32 d, u32 a) {
     c->gpr[d] = (u32)(0u - a);
-    c->xer = (c->xer & ~PPCX_XER_CA) | (a != 0u ? PPCX_XER_CA : 0u);
 }
 
 /*
- * Divide instructions. The ISA leaves the divide-by-zero result undefined;
- * the values below match widespread behaviour. Exact semantics are only
- * observable with divide-by-zero inputs.
+ * XER overflow support for the OE form of the XO instructions. Writing OV
+ * also accumulates the sticky summary-overflow bit (SO = SO | OV), which is
+ * what hardware does.
  */
-static inline u32 ppcx_divw(u32 a, u32 b) {
-    s32 sa = (s32)a, sb = (s32)b;
-    if (sb == 0) return (sa >= 0) ? 0xffffffffu : 0x00000001u;
-    if (sa == (s32)0x80000000 && sb == -1) return 0x80000000u;
-    return (u32)(sa / sb);
+static inline void ppcx_set_ov(Cpu *c, int ov) {
+    if (ov) c->xer |= PPCX_XER_OV | PPCX_XER_SO;
+    else c->xer &= ~PPCX_XER_OV;
 }
 
-static inline u32 ppcx_divwu(u32 a, u32 b) {
-    if (b == 0u) return 0xffffffffu;
-    return a / b;
+/*
+ * Overflow test for the add/subtract family: overflow happens when both
+ * operands have the same sign and the result has the opposite one.
+ */
+static inline int ppcx_ov_add(u32 x, u32 y, u32 result) {
+    return (((x ^ result) & (y ^ result)) >> 31) != 0u;
+}
+
+/*
+ * Divide instructions. The ISA leaves divide-by-zero results undefined;
+ * the values below match the two reference implementations of this CPU
+ * family (which agree with each other). The `oe` parameter mirrors the
+ * instruction's OE bit: it reports the overflow through XER.OV/SO.
+ */
+static inline void ppcx_divw(Cpu *c, u32 d, u32 a, u32 b, int oe) {
+    const s32 sa = (s32)a, sb = (s32)b;
+    const int overflow = (sb == 0) || (a == 0x80000000u && sb == -1);
+    if (overflow) c->gpr[d] = (sa < 0) ? 0xffffffffu : 0u;
+    else c->gpr[d] = (u32)(sa / sb);
+    if (oe) ppcx_set_ov(c, overflow);
+}
+
+static inline void ppcx_divwu(Cpu *c, u32 d, u32 a, u32 b, int oe) {
+    const int overflow = (b == 0u);
+    c->gpr[d] = overflow ? 0u : (a / b);
+    if (oe) ppcx_set_ov(c, overflow);
 }
 
 /*
