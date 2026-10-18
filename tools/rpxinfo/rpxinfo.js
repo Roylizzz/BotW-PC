@@ -7,6 +7,7 @@ const {
   parseRpx,
   readSectionData,
   readSymbols,
+  readRelocations,
   findSection,
   addrToSection,
   sectionTypeName,
@@ -26,12 +27,15 @@ function usage() {
 Usage:
   rpxinfo info    <file.rpx> [--json]
   rpxinfo symbols <file.rpx> [--json] [--func] [--defined] [--limit N]
+  rpxinfo relocs  <file.rpx> [--section .rela.text] [--json] [--out relocs.csv] [--limit N]
   rpxinfo dump    <file.rpx> <section name or index> --out <file>
   rpxinfo addr    <file.rpx> <hex-address>
 
 Notes:
   - Runs entirely locally on files you provide; never modifies them.
   - 'symbols' reads the .symtab table (standard 16-byte Elf32_Sym layout).
+  - 'relocs' reads a relocation section (12-byte Elf32_Rela) and prints a
+    per-symbol count; --out writes every entry as CSV for local analysis.
   - 'dump' writes the (decompressed) section bytes to --out.
     Keep dumps local; extracted data does not belong in this repository.
 `);
@@ -188,6 +192,70 @@ function commandSymbols(args) {
   }
 }
 
+function commandRelocs(args) {
+  const file = args[0];
+  if (!file) {
+    die("usage: rpxinfo relocs <file.rpx> [--section .rela.text] [--json] [--out relocs.csv] [--limit N]");
+  }
+  const json = args.includes("--json");
+  const secIndex = args.indexOf("--section");
+  const selector = secIndex >= 0 ? args[secIndex + 1] : ".rela.text";
+  if (secIndex >= 0 && !selector) die("--section needs a name or index");
+  const outIndex = args.indexOf("--out");
+  const out = outIndex >= 0 ? args[outIndex + 1] : null;
+  if (outIndex >= 0 && !out) die("--out needs a file");
+  const limitIndex = args.indexOf("--limit");
+  const limit = limitIndex >= 0 ? parseInt(args[limitIndex + 1], 10) : 30;
+  if (limitIndex >= 0 && !Number.isFinite(limit)) die("--limit needs a number");
+
+  const { buf, parsed } = load(file);
+  const result = readRelocations(buf, parsed, selector);
+  if (!result) die(`no relocation section '${selector}' found`);
+  const { section, relocations } = result;
+  const symbols = readSymbols(buf, parsed);
+  const nameOf = (index) => (symbols[index] && symbols[index].name) || `sym${index}`;
+
+  if (out) {
+    const lines = ["symbol,type,offset,addend"];
+    for (const r of relocations) {
+      lines.push(`${nameOf(r.sym)},${r.type},${hex(r.offset)},${r.addend}`);
+    }
+    fs.writeFileSync(out, lines.join("\n") + "\n");
+    console.log(`wrote ${relocations.length} relocations from '${section.name || section.index}' -> ${out}`);
+    return;
+  }
+
+  const counts = new Map();
+  for (const r of relocations) {
+    const name = nameOf(r.sym);
+    counts.set(name, (counts.get(name) || 0) + 1);
+  }
+  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+
+  if (json) {
+    console.log(
+      JSON.stringify(
+        {
+          section: section.name || String(section.index),
+          total: relocations.length,
+          symbols: sorted.map(([name, count]) => ({ name, count })),
+        },
+        null,
+        2
+      )
+    );
+    return;
+  }
+
+  console.log(
+    `relocations: ${relocations.length} in '${section.name || section.index}' (${sorted.length} distinct symbols)`
+  );
+  for (const [name, count] of sorted.slice(0, Number.isFinite(limit) ? limit : sorted.length)) {
+    console.log(String(count).padStart(7) + "  " + name);
+  }
+  if (sorted.length > limit) console.log(`... ${sorted.length - limit} more symbols`);
+}
+
 function commandDump(args) {
   const file = args[0];
   const selector = args[1];
@@ -237,10 +305,12 @@ if (!command || command === "help" || command === "--help" || command === "-h") 
   commandInfo(rest);
 } else if (command === "symbols") {
   commandSymbols(rest);
+} else if (command === "relocs") {
+  commandRelocs(rest);
 } else if (command === "dump") {
   commandDump(rest);
 } else if (command === "addr") {
   commandAddr(rest);
 } else {
-  die(`unknown command '${command}' (try: info, symbols, dump, addr)`);
+  die(`unknown command '${command}' (try: info, symbols, relocs, dump, addr)`);
 }

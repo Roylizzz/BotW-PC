@@ -238,12 +238,40 @@ function readSymbols(buf, parsed) {
   return symbols;
 }
 
+/**
+ * Reads a relocation section (default: .rela.text). Elf32_Rela records are
+ * 12 bytes: r_offset(4), r_info(4), r_addend(4); r_info packs the symbol
+ * index in the upper 24 bits and the relocation type in the low 8 bits.
+ * Offsets are absolute virtual addresses in this format.
+ */
+function readRelocations(buf, parsed, selector) {
+  const section = selector ? findSection(parsed, selector) : parsed.sections.find((s) => s.name === ".rela.text");
+  if (!section) return null;
+  const { data } = readSectionData(buf, section);
+  const entsize = section.entsize > 0 ? section.entsize : 12;
+  const count = Math.floor(data.length / entsize);
+  const relocations = [];
+  for (let i = 0; i < count; i++) {
+    const o = i * entsize;
+    const info = data.readUInt32BE(o + 4);
+    relocations.push({
+      index: i,
+      offset: data.readUInt32BE(o),
+      type: info & 0xff,
+      sym: info >>> 8,
+      addend: data.readUInt32BE(o + 8),
+    });
+  }
+  return { section, relocations };
+}
+
 module.exports = {
   RpxError,
   parseHeader,
   parseRpx,
   readSectionData,
   readSymbols,
+  readRelocations,
   findSection,
   addrToSection,
   sectionTypeName,

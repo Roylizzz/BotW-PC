@@ -15,13 +15,16 @@ It never modifies the file it inspects and contains no game content.
 node rpxinfo.js info    "<your dump>/code/U-King.rpx"
 node rpxinfo.js info    "<your dump>/code/U-King.rpx" --json
 node rpxinfo.js symbols "<your dump>/code/U-King.rpx" --func --limit 25
+node rpxinfo.js relocs  "<your dump>/code/U-King.rpx" --limit 20
 node rpxinfo.js dump    "<your dump>/code/U-King.rpx" .text --out text.bin
 node rpxinfo.js addr    "<your dump>/code/U-King.rpx" 0x03C70404
 ```
 
 `symbols` reads the `.symtab` (standard 16-byte `Elf32_Sym` layout) and
 resolves names through the linked string table; `--func` / `--defined`
-filter, `--limit N` caps the output.
+filter, `--limit N` caps the output. `relocs` reads a relocation section
+(default `.rela.text`, 12-byte `Elf32_Rela` records) and counts entries
+per symbol; `--out` writes them as CSV for local call-site analysis.
 
 Keep `--out` dumps local — extracted data stays off this repository.
 

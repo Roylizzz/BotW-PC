@@ -11,6 +11,7 @@ const {
   parseRpx,
   readSectionData,
   readSymbols,
+  readRelocations,
   findSection,
   addrToSection,
   sectionFlagsHuman,
@@ -23,7 +24,7 @@ test("parses the synthetic header", () => {
   const { header } = parseRpx(buffer);
   assert.equal(header.e_machine, 20);
   assert.equal(header.e_type, 0xfe01);
-  assert.equal(header.e_shnum, 6);
+  assert.equal(header.e_shnum, 7);
   assert.equal(header.e_shstrndx, 3);
   assert.equal(header.e_phnum, 0);
   assert.equal(header.e_entry, 0x02000024);
@@ -63,6 +64,18 @@ test("reads the symbol table with the standard 16-byte layout", () => {
   assert.deepEqual(
     symbols.map((s) => ({ name: s.name, value: s.value, size: s.size, type: s.type, bind: s.bind, shndx: s.shndx })),
     expected.symbols
+  );
+});
+
+test("reads relocations from .rela.text", () => {
+  const { buffer, expected } = build();
+  const parsed = parseRpx(buffer);
+  const result = readRelocations(buffer, parsed, ".rela.text");
+  assert.ok(result);
+  assert.equal(result.section.name, ".rela.text");
+  assert.deepEqual(
+    result.relocations.map(({ offset, type, sym, addend }) => ({ offset, type, sym, addend })),
+    expected.relocs
   );
 });
 
@@ -126,6 +139,24 @@ test("CLI symbols lists function symbols with --func", () => {
     );
     assert.match(onlyFunc, /imported_func/);
     assert.doesNotMatch(onlyFunc, /data_global/);
+  } finally {
+    fs.unlinkSync(tmp);
+  }
+});
+
+test("CLI relocs summarizes per-symbol counts", () => {
+  const { buffer } = build();
+  const tmp = path.join(os.tmpdir(), `rpxinfo-test-${process.pid}.rpx`);
+  fs.writeFileSync(tmp, buffer);
+  try {
+    const out = execFileSync(
+      process.execPath,
+      [path.join(__dirname, "..", "rpxinfo.js"), "relocs", tmp],
+      { encoding: "utf8" }
+    );
+    assert.match(out, /relocations: 2/);
+    assert.match(out, /imported_func/);
+    assert.match(out, /data_global/);
   } finally {
     fs.unlinkSync(tmp);
   }

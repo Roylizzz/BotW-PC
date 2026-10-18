@@ -44,8 +44,10 @@ function build() {
     Buffer.from([0]),
     Buffer.from(".strtab", "utf8"),
     Buffer.from([0]),
+    Buffer.from(".rela.text", "utf8"),
+    Buffer.from([0]),
   ]);
-  const shNameOff = { stub: 1, textz: 7, shstrtab: 14, symtab: 24, strtab: 32 };
+  const shNameOff = { stub: 1, textz: 7, shstrtab: 14, symtab: 24, strtab: 32, relaText: 40 };
 
   const symstr = Buffer.concat([
     Buffer.from([0]),
@@ -79,15 +81,23 @@ function build() {
   writeU16(symtab, o + 14, 2);
 
   const headerSize = 64;
-  const sectionCount = 6;
-  // The section-header array spans [64, 64 + 6*40 = 304); all section
+  const sectionCount = 7;
+  // The section-header array spans [64, 64 + 7*40 = 344); all section
   // data must start after it to avoid clobbering header fields.
   const stubOffset = 0x200;
   const textzOffset = 0x300;
   const shstrOffset = 0x500;
   const symtabOffset = 0x600;
   const strtabOffset = 0x700;
-  const totalSize = strtabOffset + symstr.length + 0x40;
+  const relaOffset = 0x800;
+  const relas = Buffer.alloc(2 * 12);
+  writeU32(relas, 0, 0x02000024);
+  writeU32(relas, 4, (1 << 8) | 10); // symbol 1, R_PPC_REL24
+  writeU32(relas, 8, 0);
+  writeU32(relas, 12, 0x02000028);
+  writeU32(relas, 16, (2 << 8) | 6); // symbol 2, R_PPC_ADDR16_HA
+  writeU32(relas, 20, 4);
+  const totalSize = relaOffset + relas.length + 0x40;
   const buf = Buffer.alloc(totalSize);
 
   // --- ELF header ---
@@ -159,11 +169,22 @@ function build() {
   writeU32(buf, sec(5) + 20, symstr.length);
   writeU32(buf, sec(5) + 32, 1);
 
+  // section 6: .rela.text — RELA, link -> .symtab (index 4), info -> .textz (index 2)
+  writeU32(buf, sec(6), shNameOff.relaText);
+  writeU32(buf, sec(6) + 4, 4);
+  writeU32(buf, sec(6) + 16, relaOffset);
+  writeU32(buf, sec(6) + 20, relas.length);
+  writeU32(buf, sec(6) + 24, 4);
+  writeU32(buf, sec(6) + 28, 2);
+  writeU32(buf, sec(6) + 32, 4);
+  writeU32(buf, sec(6) + 36, 12);
+
   stub.copy(buf, stubOffset);
   textz.copy(buf, textzOffset);
   shstr.copy(buf, shstrOffset);
   symtab.copy(buf, symtabOffset);
   symstr.copy(buf, strtabOffset);
+  relas.copy(buf, relaOffset);
 
   return {
     buffer: buf,
@@ -171,12 +192,16 @@ function build() {
       stub,
       textPayload,
       deflated,
-      names: ["", ".stub", ".textz", ".shstrtab", ".symtab", ".strtab"],
+      names: ["", ".stub", ".textz", ".shstrtab", ".symtab", ".strtab", ".rela.text"],
       symbols: [
         { name: "", value: 0, size: 0, type: 0, bind: 0, shndx: 0 },
         { name: "imported_func", value: 0xc0000000, size: 0, type: 2, bind: 1, shndx: 11 },
         { name: "data_global", value: 0x10000000, size: 4, type: 1, bind: 1, shndx: 3 },
         { name: "local_label", value: 0x02000020, size: 0, type: 0, bind: 0, shndx: 2 },
+      ],
+      relocs: [
+        { offset: 0x02000024, type: 10, sym: 1, addend: 0 },
+        { offset: 0x02000028, type: 6, sym: 2, addend: 4 },
       ],
     },
   };
