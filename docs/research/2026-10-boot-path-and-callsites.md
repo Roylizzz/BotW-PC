@@ -1,6 +1,6 @@
 # Boot path and relocation call-site map
 
-- **Date:** 2026-10-18 (rev. 2: import-name fix and vtable cluster)
+- **Date:** 2026-10-18 (rev. 4: vtable reference analysis)
 - **Game version:** Wii U update v208 (`code/U-King.rpx`)
 - **Tooling:** `tools/rpxinfo relocs`, Ghidra 12.1.4 headless, local scripts
 - **Contributor:** @Roylizzz
@@ -101,15 +101,21 @@ APIs?
    - calls its own virtual `+0x2c` (the object `main` later configures
      with the worker descriptor).
 
-8. **Two graphics-layer vtables, one interface.** `.rela.rodata`
-   pointers place `flush`/`present` in two tables: A (`flush`
-   `0x1025FE50`, `present` `0x1025FE68`, methods in the `0x0309` module)
-   and B (`flush` `0x10295F6C`, `present` `0x10295F84`, methods in
-   `0x031F`). Entries are 8-byte `{code, 0}` descriptor-like pairs; unused
-   slots share the default `0x0420CF58`; both tables hold the shared
-   method `0x0309D158` right after `present`. The data layout is shared
-   too — begin/end callback at `+0x370`, mode word at `+0x28`, flag at
-   `+0x375` — so this looks like one interface with two implementations:
+8. **Two graphics-layer vtables, one interface — but no static
+   reference.** `.rela.rodata` pointers place `flush`/`present` in two
+   tables: A (`flush` `0x1025FE50`, `present` `0x1025FE68`, methods in
+   the `0x0309` module) and B (`flush` `0x10295F6C`, `present`
+   `0x10295F84`, methods in `0x031F`). Entries are 8-byte `{code, 0}`
+   descriptor-like pairs; unused slots share the default `0x0420CF58`;
+   both tables hold the shared method `0x0309D158` right after
+   `present`. However, no relocation in any `.rela.*` section and no
+   literal data pointer targets either table (or their likely vptr
+   bases, `0x1025FE34`/`0x10295F38`), so the objects that use them must
+   receive the pointer at runtime (loader-side patch of an object
+   template?) — how `GX2SwapScanBuffers` is reached at run time is
+   therefore still open. Both implementations share the data layout
+   (begin/end callback at `+0x370`, mode word at `+0x28`, flag at
+   `+0x375`). Behaviour of the two entries:
    - `present-A` (`FUN_0309D068`): optional callback, `GX2Flush`,
      `GX2SwapScanBuffers` only when `mode==2` and the flag is set,
      `GX2DrawDone`;
@@ -119,6 +125,19 @@ APIs?
      a post-swap display enable (`GX2SetTVEnable(1)`,
      `GX2SetDRCEnable(1)`, `ProcUIDrawDoneRelease()`) when a state field
      equals 2.
+
+9. **Interface tables are `$DATA`-relocated.** Class/interface tables in
+   `.rodata` are `{code, 0}` arrays whose entries carry `R_PPC_ADDR32`
+   relocations against `$TEXT`, and the *code* that points at them uses
+   ordinary `$DATA` (`0x10000000`-based) relocations. Example:
+   `FUN_034F23B4` (368 B, called from `FUN_034F13CC`) stores
+   `&DAT_102CFE24` at object+4; that table starts with three zero words
+   and then code pointers `0x034F2524`, `0x034F22CC`, `0x030B0FBC`. The
+   same function registers a descriptor pair `{name, &DAT_10263910}`
+   (the class-descriptor constant also used for `"GraphicsSystem"`).
+   Method lesson: matching nearby `lis`/`addi` pairs by register number
+   alone gives false positives under register reuse — `$DATA` relocation
+   scans are the reliable way to find who references a table.
 
 ## Evidence quality
 
@@ -134,6 +153,8 @@ APIs?
 
 - Decode how the loader patches `REL24` branch operands (the analyzed
   image shows in-module targets, not import slots).
+- Explain why the `0x1025FE40`/`0x10295F44` tables have no static
+  reference, and find the real runtime path to `GX2SwapScanBuffers`.
 - Identify the task/frame callback that drives the present paths (the
   worker started by the GraphicsSystem `+0x2C` virtual).
 - Find out what `mode==2` means and which graphics implementation (A or
