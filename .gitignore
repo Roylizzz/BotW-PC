@@ -1,0 +1,84 @@
+# ---------------------------------------------------------------------------
+# BotW-PC .gitignore
+# This repository must remain free of copyrighted game content.
+# Never commit game dumps, extracted assets, encryption keys, or secrets.
+# ---------------------------------------------------------------------------
+
+# --- Nintendo game files (Wii U / Switch) ---
+*.rpx
+*.rpl
+*.wud
+*.wux
+*.wum
+*.wua
+*.nsp
+*.xci
+*.xcz
+*.nca
+*.kip
+*.h3
+*.tik
+*.tmd
+*.nacp
+
+# --- Extracted game asset formats ---
+# (Contributors generate any test fixtures locally with their own tools.)
+*.bfres
+*.bntx
+*.sarc
+*.byml
+*.aamp
+*.bars
+*.blarc
+*.pack
+
+# --- Dumps, keys, local game data ---
+/game/
+/Game/
+/dump/
+/dumps/
+/romfs/
+/keys/
+keys.txt
+otp.bin
+seeprom.bin
+*.key
+
+# --- Local analysis artifacts (stay on your machine) ---
+*.dmp
+*.core
+.rea/
+/reports/
+
+# --- Node / JS tooling ---
+node_modules/
+npm-debug.log*
+.npm/
+
+# --- Build outputs ---
+build/
+dist/
+out/
+bin/
+obj/
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.dylib
+*.lib
+
+# --- IDE / OS noise ---
+.vs/
+.vscode/
+.idea/
+*.user
+Thumbs.db
+Desktop.ini
+
+# --- Secrets ---
+.env
+.env.*
+*.secret
+*_token*
