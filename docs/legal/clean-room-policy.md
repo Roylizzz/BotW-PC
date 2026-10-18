@@ -52,3 +52,8 @@ At hobby scale we cannot run two fully isolated teams. Instead we use a
    analysis notes beyond factual content.
 
 If a PR blurs the line, it gets rejected — no hard feelings, policy wins.
+
+## See also
+
+- [Prior art: how comparable projects stay legal](prior-art.md) — the
+  projects we model and the formula they follow.
