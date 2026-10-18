@@ -1,0 +1,58 @@
+# Analysis environment
+
+Status of the reverse-engineering toolchain and the analysis target.
+Everything here happens **locally**; nothing from a game copy ever enters
+this repository.
+
+## Target facts (Wii U release)
+
+| Fact | Value |
+| ---- | ----- |
+| Main executable | `code/U-King.rpx` (base) and the update's `U-King.rpx` |
+| Format | ELF32, big-endian, `EM_PPC` (PowerPC #20), custom `e_type=0xFE01` (RPX) |
+| Entry point | base `0x03AB62AC` / update v208 `0x03C70404` |
+| Sizes | base ≈ 21.0 MB / update v208 ≈ 22.2 MB |
+| Updates | v208 is the latest published update (the version upstream research commonly calls 1.5.0) |
+
+Notes for tooling:
+
+- The RPX is an ELF variant. Tools that expect standard `ET_EXEC` may need a
+  **local scratch copy** with `e_type` patched from `0xFE01` to `0x0002`.
+  Such scratch copies stay on the analyst's machine and are never committed.
+- `content/` follows the usual resource layout (`Actor/`, `Map/`, `Model/`,
+  `Pack/`, `System/`, …). Format documentation is public (ZeldaMods wiki and
+  community notes); we cite public documentation, not game content.
+
+## Toolchain status (workstation, Windows x64)
+
+| Component | Version | State |
+| --------- | ------- | ----- |
+| Node.js | 24.20.0 | ✅ (REA requires 22.19+/24.11+/26+) |
+| JDK (Temurin) | 21 | ✅ (Ghidra 12.1.x requires 21+) |
+| [REA](https://github.com/morluto/rea) | 6.5.0 (npx) | ✅ CLI works |
+| [Rizin](https://rizin.re/) | 0.9.1 | ✅ (multi-arch static disassembly) |
+| [Ghidra](https://ghidra-sre.org/) | 12.1.4 | ✅ installed locally |
+
+## Platform constraints (important)
+
+- REA's **Ghidra provider on Windows is an experimental read-only "P0"
+  boundary limited to PE x86/x86-64 targets** — it does not admit our
+  PowerPC RPX.
+- REA's **PowerPC lane (ELF32 BE, `EM_PPC`) requires a Linux or macOS
+  host** with Ghidra. On Windows, deep PPC pseudocode analysis therefore
+  uses one of:
+  1. **Rizin via REA** (`execute-rizin-command`) — cross-platform static
+     disassembly, works today;
+  2. **Ghidra headless directly** (PowerPC support is in core Ghidra) with
+     our own import scripts;
+  3. a Linux/macOS workstation (not available on this machine; WSL is not
+     installed).
+- This is a REA limitation, not a Ghidra one: Ghidra itself analyzes
+  PowerPC on Windows without issue when driven directly.
+
+## Working rules
+
+- Scratch/patched copies of executables live under a local tools folder
+  (e.g. `Tools/analysis/`), never in this repository.
+- Analysis databases (Ghidra projects) stay local.
+- Findings are written up in `docs/research/` as descriptions only.
