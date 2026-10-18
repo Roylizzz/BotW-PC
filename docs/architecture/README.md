@@ -19,3 +19,5 @@ Whatever direction we choose, the eventual system needs roughly:
 Significant decisions are recorded as short ADRs in `decisions/`:
 
 - [0001 — Use architecture decision records](decisions/0001-use-adr.md)
+- [0002 — Port approach: options and evaluation criteria](decisions/0002-port-approach.md)
+  (draft; decision deferred to Phase 2)

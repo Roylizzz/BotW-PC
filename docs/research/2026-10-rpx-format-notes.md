@@ -45,14 +45,21 @@ What is `code/U-King.rpx`, and how do we load it into analysis tools?
 ## Symbol table (verified)
 
 - `.symtab` uses the standard 16-byte `Elf32_Sym` layout: 483 entries,
-  437 of them `FUNC` symbols.
+  437 of them `FUNC` symbols (verified with `tools/rpxinfo symbols`).
 - The binary publishes its **system-library imports with full names**
-  (18 `fimport_*` sections, 8-byte stubs starting at `0xC0004540`):
-  `gx2` (130), `coreinit` (142 code + 9 data), `snd_core` (62),
-  `nn_nfp` (20), `nn_boss` (18), `h264` (14), `padscore` (13),
-  `vpad` (11), `nn_save` (10), `nn_aoc` (8), `zlib125` (7),
-  `proc_ui` (6), `sysapp` (5), `nn_act` (4), `vpadbase` (2),
-  `snd_user`, `nsysnet`, `nn_ac` (1 each).
+  (18 `fimport_*` sections, 8-byte stubs starting at `0xC0004540`;
+  addresses step by 8, e.g. `0xC0004548`, `0xC0004550`, …).
+  Function imports per library: `gx2` 129, `coreinit` 141,
+  `snd_core` 61, `nn_nfp` 19, `nn_boss` 17, `h264` 13, `padscore` 12,
+  `vpad` 10, `nn_save` 9, `nn_aoc` 7, `zlib125` 6, `proc_ui` 5,
+  `sysapp` 4, `nn_act` 3, `vpadbase` 1 — 437 in total. Each
+  `fimport_*` section also carries one `SECTION` symbol of the same name
+  (counting those explains the "+1" per library).
+- **Data imports** live in `dimport` sections referencing pointers:
+  `.dimport_coreinit` (9 entries), `.dimport_nn_boss` (2),
+  `.dimport_nn_act` (2).
+- `snd_user`, `nsysnet` and `nn_ac` sections exist but expose only their
+  `SECTION` symbol — no named functions in `.symtab` (open question).
 - Exported data symbols include **Havok TLS globals** in `.thrbss`
   (`hkThreadNumber`, `s_memoryRouter`, `hkMonitorStream` instance) —
   the game ships with Havok physics.

@@ -12,20 +12,21 @@
    runnable.
 3. **Reproducible:** everything must work from a user's own copy + this repo.
 
-## Phase 0 — Project organization ✅ (in progress)
+## Phase 0 — Project organization ✅ (done)
 
 - Clean-room policy, disclaimer, license.
 - Repository structure and contribution rules.
 
 ## Phase 1 — Analysis environment & reconnaissance
 
-- [ ] Set up the REA toolchain (Node 22.19+/24.11+/26+) and a deep-analysis
-      provider (Ghidra with PowerPC support, or IDA).
-- [ ] Inventory a contributor's own copy: file layout (`content/`, `romfs/`,
-      update/DLC), executable identification (main RPX on Wii U / main NSO on
-      Switch).
+- [x] Set up the REA toolchain (Node 24, REA 6.5.0) and a deep-analysis
+      provider (Ghidra 12.1.4 with a PowerPC/RPX loader; see
+      `docs/reverse-engineering/environment.md`).
+- [x] Inventory a contributor's own copy: file layout (`content/`, update
+      data), executable identification (`code/U-King.rpx`, base + v208).
 - [ ] Format notes: boot flow and resource formats (BYML, AAMP, SARC, BFRES,
       …) documented from public knowledge plus own observations.
+      *(RPX/RPL documented in `docs/research/`; asset formats pending.)*
 
 Deliverable: `docs/research/` notes and format specs.
 
