@@ -16,9 +16,12 @@ this repository.
 
 Notes for tooling:
 
-- The RPX is an ELF variant. Tools that expect standard `ET_EXEC` may need a
-  **local scratch copy** with `e_type` patched from `0xFE01` to `0x0002`.
-  Such scratch copies stay on the analyst's machine and are never committed.
+- The file is an ELF variant with **zlib-compressed sections** and **no
+  program headers**. Stock ELF loaders (rizin, objdump, stock Ghidra)
+  cannot consume it directly. Use the community Ghidra RPX/RPL loader
+  extension ([Maschell/GhidraRPXLoader](https://github.com/Maschell/GhidraRPXLoader)),
+  or our `tools/rpxinfo` to inspect and decompress sections locally
+  (scratch files stay off-repo).
 - `content/` follows the usual resource layout (`Actor/`, `Map/`, `Model/`,
   `Pack/`, `System/`, …). Format documentation is public (ZeldaMods wiki and
   community notes); we cite public documentation, not game content.
