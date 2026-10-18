@@ -32,7 +32,21 @@ and files disagree, trust the files, and correct the memory.
 - If it is not written down, it did not happen: the next compaction deletes it
   from the agent's mind.
 
-## 3. Reverse engineering: use rea first
+## 3. Keep the documentation up to date — stale docs are a bug
+
+- A change is not finished until the documentation matches reality. After
+  any state change, milestone or decision, update every affected document in
+  the same session: `README.md`, `ROADMAP.md` (status lines and checkboxes),
+  the relevant notes under `docs/research/`, the ADRs under
+  `docs/architecture/decisions/` and any `docs/reverse-engineering/` page you
+  touched.
+- If a document is already outdated, fix it in place instead of writing a
+  new file on top. When code and docs disagree, the code is the source of
+  truth: correct the document and say why in the commit message.
+- Ship documentation updates together with the change they describe, and
+  record them in Engram like anything else (rule 2).
+
+## 4. Reverse engineering: use rea first
 
 - This project's reverse-engineering work runs through the **rea MCP server**
   (`tools.rea.*` in Code Mode). When a task involves binaries, artifacts,
@@ -50,7 +64,7 @@ and files disagree, trust the files, and correct the memory.
 - Record rea findings in Engram (rule 2), keeping `evidence_id` values when
   relevant.
 
-## 4. Keep the repository clean (legal first)
+## 5. Keep the repository clean (legal first)
 
 - **Zero Nintendo content in this repository**: no assets, no ROM/RomFS
   content, no executables, no keys. Everything game-derived is generated
@@ -58,7 +72,7 @@ and files disagree, trust the files, and correct the memory.
 - See `docs/legal/clean-room-policy.md` and `docs/legal/prior-art.md`. The
   legal formula overrides any other consideration.
 
-## 5. Working with the maintainer
+## 6. Working with the maintainer
 
 - The maintainer communicates in **Spanish**: reply to them in Spanish.
 - Keep code, commits and documentation in **English**.
