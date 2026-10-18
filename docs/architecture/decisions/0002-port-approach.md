@@ -1,8 +1,9 @@
 # 2. Port approach: options and evaluation criteria
 
 - **Date:** 2026-10-18
-- **Status:** draft — **no decision taken yet**; this file collects the
-  options and the criteria so Phase 2 can close quickly once evidence is in
+- **Status:** draft — **maintainer decision pending**; evidence gathered
+  2026-10-18 and a recommendation is recorded below (see *Evidence* and
+  *Recommendation*)
 
 ## Context
 
@@ -77,6 +78,59 @@ replaced natively. Same legal shape as A; converges toward A over time.
 4. **Prior art / precedent** — see
    [`docs/legal/prior-art.md`](../../legal/prior-art.md).
 5. **Long-term ceiling** — what the project can ever become.
+
+## Evidence gathered (2026-10-18)
+
+Reconnaissance of public prior art changed the state of this question:
+option A is no longer hypothetical — least of all on Wii U. Full write-up:
+[`docs/research/2026-10-prior-art-and-recompilation.md`](../../research/2026-10-prior-art-and-recompilation.md).
+
+- **A working Wii U precedent exists.** ZeldaWWHDRecomp (MPL-2.0) runs
+  *Wind Waker HD* natively on Windows/Linux/macOS/Android with exactly the
+  shape of option A: ahead-of-time PowerPC→C translation, Cafe OS
+  reimplemented natively, GX2 implemented directly on Vulkan/Metal (no
+  command-packet emulation; Cemu's MPL-2.0 shader decompiler and address
+  library vendored). Its `docs/how-it-works.md` is the de-facto
+  architecture spec for this class of port.
+- **A general Wii U toolkit exists.** nWiiURecomp (GPL-3.0, early) ships
+  an RPX analyzer (with a Ghidra export script), an offline PPC→C++
+  recompiler and a Cafe OS HLE runtime skeleton. License: reading
+  material only for this MIT repository.
+- **On this exact game.** A private Wii U "lifter" prototype with BotW
+  reportedly playable (bugs/perf pending) was demonstrated in 2026; no
+  public repository yet — informal proof of feasibility on this title.
+- **Naming material for the same game version.** `zeldaret/botw` publishes
+  a names-only function database for Switch 1.5.0 (113,490 entries;
+  72,243 named — fetched and verified locally 2026-10-18) — the same
+  release family as our Wii U v208 target. Our RPX itself is stripped
+  (483 symbols — sections and imports only, verified with `tools/rpxinfo`).
+  The database provides vocabulary (`sead::GameFrameworkNx`,
+  `uking::frm::RootTask`, …) and is fetched locally, never committed.
+- **PowerPC static recompilation is a solved pattern beyond Wii U.**
+  XenonRecomp (MIT) + UnleashedRecomp (GPL-3.0) did it for the Xbox 360
+  (also big-endian PowerPC) with documented lessons on function
+  boundaries, jump tables, indirect calls and hooks.
+- **The known hard parts are documented**: exact guest semantics
+  (paired-single, GQR, `lwarx`/`stwcx.`, memory ordering), Cafe OS
+  thread/core scheduling fidelity, texture write-watching, shader
+  translation — each has at least one public reference implementation.
+
+## Recommendation (pending maintainer sign-off)
+
+Adopt **option A — static recompilation + original HLE runtime** as the
+primary direction, structured as **option D in time**: land subsystems
+incrementally behind HLE stubs, with two documented migration targets —
+native GX2 on Vulkan (short/medium term, WWHD-style) and replacement by
+`zeldaret/botw` source as that decompilation matures (long term). Option B
+remains out of scope as a standalone effort; option C stays excluded.
+
+Conditions that keep this legal and consistent with the clean-room policy:
+recompilation happens **locally, at build time, from the user's own copy**;
+the repository ships tools, runtime and docs only; the public symbol
+database is fetched locally (names only, git-ignored) and never committed;
+GPL-licensed prior art (nWiiURecomp, UnleashedRecomp, decaf-emu) is read,
+never copied into this MIT repository; any vendored MPL-2.0 components
+(e.g. Cemu's) keep their license and headers.
 
 ## Decision
 

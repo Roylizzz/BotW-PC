@@ -49,6 +49,7 @@ seeprom.bin
 *.core
 .rea/
 /reports/
+/symbols-local/
 
 # --- Node / JS tooling ---
 node_modules/

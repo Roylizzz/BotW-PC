@@ -34,15 +34,30 @@ Deliverable: `docs/research/` notes and format specs.
 
 ## Phase 2 — Feasibility & architecture decision
 
-- [ ] Evaluate directions:
+- [x] Evaluate directions against 2026 prior art
+      ([reconnaissance](docs/research/2026-10-prior-art-and-recompilation.md)):
   - **A. Recompilation-style:** translate the original binary into native
-    code that runs against the user's own data. Technically enormous; prior
-    art exists for other N64-era titles.
+    code that runs against the user's own data. **Close, working precedents
+    exist on Wii U** (ZeldaWWHDRecomp; general toolkit in nWiiURecomp) plus
+    a private BotW prototype; ADR-0002 records a recommendation for this
+    direction.
   - **B. Engine reimplementation:** original engine code that interprets the
-    user's data files. Years of work; asset formats are the entry point.
+    user's data files. Years of work; remains the long-term convergence path
+    via `zeldaret/botw` (Switch 1.5.0 — same game version as our v208).
   - **C. Assisted emulation:** original helper tooling around an existing
-    emulator experience. Least effort; not a real "port".
-- [ ] Write an ADR choosing the direction, with reasoning.
+    emulator experience. Least effort; not a real "port" — excluded.
+- [x] Naming material identified: names-only function/symbol database for
+      the same game version — `tools/fetch-symbol-data.ps1` (local, never
+      committed).
+- [ ] Maintainer sign-off on the recommended direction (ADR-0002).
+- [ ] Once signed off, first workstreams:
+  - recompiler pass over our own RPX (boundaries from the Ghidra census +
+    `tools/rpxinfo` relocations; big-endian memory model; tail calls;
+    indirect-call dispatch);
+  - HLE runtime skeleton for the **437 mapped imports** (start with
+    `coreinit`/`proc_ui`, keep GX2 stubbed);
+  - GX2 "first frame" milestone: implement the `gx2` imports used before
+    the first present (call-site map already exists in Phase 1 notes).
 
 Deliverable: `docs/architecture/` decision record.
 

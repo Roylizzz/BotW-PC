@@ -1,6 +1,7 @@
 # Boot path and relocation call-site map
 
-- **Date:** 2026-10-18 (rev. 5: GraphicsSystem object map and start virtual)
+- **Date:** 2026-10-18 (rev. 6: prior-art cross-check with the public
+  Switch 1.5.0 symbol database)
 - **Game version:** Wii U update v208 (`code/U-King.rpx`)
 - **Tooling:** `tools/rpxinfo relocs`, Ghidra 12.1.4 headless, local scripts
 - **Contributor:** @Roylizzz
@@ -161,6 +162,32 @@ APIs?
     (`FUN_0309C81C`, 88 B). Frame scheduling therefore lives in the
     **sead MethodTree**, which drives the `RootTask` virtuals; how the
     tree reaches `present-B` is the next link to reconstruct.
+
+11. **Cross-check against the public symbol database (Switch 1.5.0).**
+    The decompilation project `zeldaret/botw` publishes a names-only
+    function database for the *Switch* build of the same game version
+    (`data/uking_functions.csv`: 113,490 entries, 72,243 named; our Wii U
+    RPX itself is stripped — 483 symbols, sections and imports only,
+    verified with `tools/rpxinfo`). It names the framework structures this
+    note describes on the Wii U side:
+    - `uking::frm::RootTask` (`prepare` 432 B, `enter`, `calc` 3,908 B,
+      `exit`, `dtor`) and `sead::TTaskFactory<RootTask>` — the factory
+      template behind our worker callback `FUN_02c4c0dc`;
+    - `sead::GameFrameworkNx` (`initialize_`, `ctor`,
+      `initializeGraphicsSystem(sead::Heap*, sead::Vector2f const&)`,
+      `presentAsync_(sead::Thread*, s64)`, `swapBuffer_`, `initRun_`,
+      `runImpl_`) and `sead::SingleScreenMethodTreeMgr::{calc, draw}` —
+      the framework that owns the method tree and the present path;
+    - `uking::frm::System::{preCalc, calcAndRunStateMachine, postCalc}`.
+    Interpretation: on Switch the present path is a *framework* method
+    (`presentAsync_` even takes a `sead::Thread*`), reached through the
+    framework's object graph and virtual dispatch — consistent with our
+    finding that the Wii U present/flush wrappers (tables A/B) have no
+    *direct* static callers. Phase 2 should settle this dynamically
+    (address hooks in the HLE runtime / mid-asm hooks), not with
+    static-only analysis. Names are facts from a public names-only
+    database for the Switch build and are used as vocabulary here, never
+    as Wii U addresses.
 
 ## Evidence quality
 
