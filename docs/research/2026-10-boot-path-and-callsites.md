@@ -87,6 +87,39 @@ APIs?
    consistent with a graphics layer driven by the framework task system.
    These are the natural anchors for the render loop.
 
+7. **The "GraphicsSystem" is created in `FUN_02c5e368` (652 B).** The
+   function that `main` calls before registering the worker descriptor:
+   - allocates a 1000-byte context (`FUN_0308e5a0(1000, heap, 4)`) and
+     hands it to `FUN_031fa100` (216 B) together with a fixed struct
+     `{1, 0x500, 0x2D0, ...}` (1280×720);
+   - creates a 48 MB (`0x3000000`) allocator through `thunk_FUN_030a5e24`
+     labelled `"GraphicsSystem"`;
+   - calls `FUN_031fa220` (96 B) → `FUN_0309bbb0` (GX2Init) with two
+     floats derived from `FUN_03405a9c`/`FUN_03405ad0` results;
+   - loads Sead assets: `System/Sead/primitive_renderer_cafe.gsh` and
+     `System/font/gx2_font/debug_font(.jis1).gsh/.gtx`;
+   - calls its own virtual `+0x2c` (the object `main` later configures
+     with the worker descriptor).
+
+8. **Two graphics-layer vtables, one interface.** `.rela.rodata`
+   pointers place `flush`/`present` in two tables: A (`flush`
+   `0x1025FE50`, `present` `0x1025FE68`, methods in the `0x0309` module)
+   and B (`flush` `0x10295F6C`, `present` `0x10295F84`, methods in
+   `0x031F`). Entries are 8-byte `{code, 0}` descriptor-like pairs; unused
+   slots share the default `0x0420CF58`; both tables hold the shared
+   method `0x0309D158` right after `present`. The data layout is shared
+   too — begin/end callback at `+0x370`, mode word at `+0x28`, flag at
+   `+0x375` — so this looks like one interface with two implementations:
+   - `present-A` (`FUN_0309D068`): optional callback, `GX2Flush`,
+     `GX2SwapScanBuffers` only when `mode==2` and the flag is set,
+     `GX2DrawDone`;
+   - `present-B` (`FUN_031FA9E0`): same shape plus
+     `GX2SetGPUFence(&DAT_1046D420, 0xFFFFFFFF, 6, tick + DAT_1046D440)`,
+     `DCInvalidateRange(ptr, 0x20)`, extra virtuals `+0x15C`/`+0x164`, and
+     a post-swap display enable (`GX2SetTVEnable(1)`,
+     `GX2SetDRCEnable(1)`, `ProcUIDrawDoneRelease()`) when a state field
+     equals 2.
+
 ## Evidence quality
 
 - **Observed:** relocation types/counts, `bl` instructions at REL24
@@ -101,8 +134,12 @@ APIs?
 
 - Decode how the loader patches `REL24` branch operands (the analyzed
   image shows in-module targets, not import slots).
+- Identify the task/frame callback that drives the present paths (the
+  worker started by the GraphicsSystem `+0x2C` virtual).
+- Find out what `mode==2` means and which graphics implementation (A or
+  B) the game actually uses per output.
 - Identify which virtual method of the `0x101C5F30` cluster is the
-  per-frame `run`/`update` callback, and which present wrapper it calls.
+  per-frame `run`/`update` callback.
 - Resolve the three-word vtable header that precedes the method pointers.
 - Map the `GX2Init` argument structure to plan the runtime's graphics
   bootstrap.
