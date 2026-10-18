@@ -47,7 +47,7 @@ Read the full policy: [DISCLAIMER.md](DISCLAIMER.md) and
 | `docs/research/` | Findings from analysis of contributors' own copies |
 | `docs/reverse-engineering/` | Tooling and workflow docs (REA, Ghidra, …) |
 | `docs/architecture/` | Architecture sketch and decision records (ADRs) |
-| `tools/` *(planned)* | Original CLI tools: parsers, converters, helpers |
+| `tools/` | Original CLI tools — first one: `tools/rpxinfo` (RPX/RPL inspector) |
 | `src/` *(planned)* | Original runtime code |
 
 ## Legal

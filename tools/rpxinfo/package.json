@@ -1,0 +1,13 @@
+{
+  "name": "rpxinfo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Original CLI to inspect Wii U RPX/RPL executables (header, sections, zlib sections, address mapping)",
+  "license": "MIT",
+  "bin": {
+    "rpxinfo": "./rpxinfo.js"
+  },
+  "scripts": {
+    "test": "node --test tests/rpx.test.js"
+  }
+}
