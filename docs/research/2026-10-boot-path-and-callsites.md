@@ -1,6 +1,6 @@
 # Boot path and relocation call-site map
 
-- **Date:** 2026-10-18 (rev. 4: vtable reference analysis)
+- **Date:** 2026-10-18 (rev. 5: GraphicsSystem object map and start virtual)
 - **Game version:** Wii U update v208 (`code/U-King.rpx`)
 - **Tooling:** `tools/rpxinfo relocs`, Ghidra 12.1.4 headless, local scripts
 - **Contributor:** @Roylizzz
@@ -138,6 +138,29 @@ APIs?
    Method lesson: matching nearby `lis`/`addi` pairs by register number
    alone gives false positives under register reuse — `$DATA` relocation
    scans are the reliable way to find who references a table.
+
+10. **GraphicsSystem object map and its start virtual.** `FUN_031FA100`
+    (216 B) is the GraphicsSystem constructor:
+    - vptr at offset 0 → `0x10295E78`, inside the `0x10295Exx/0x10295Fxx`
+      cluster (family B — the one that holds the live `flush`/`present`);
+    - second vptr at `+0x380` → `0x10295FE0`; sub-object at `+0x388`
+      (`FUN_031faf58`); a `{2,2,0,0}` sub-object at `+0x3C8`; a sub-object
+      at `+0x3D8` with vptr `0x10295DE8`; `+0x3E0 = 0` (object size 1000
+      bytes).
+    The vtable uses the same layout as the other tables (three header
+    words `{0,0,0}`, then 8-byte entries), so `main`'s `+0x2C` call is
+    method index 4 → `FUN_0309ED98` (284 B), which calls `+0x5C`
+    (`FUN_031FA4CC`, returns a static `&UNK_031FA4C8`) and `+0x64`
+    (`FUN_0309F7E4`, a no-op in this class), creates
+    `"sead::MethodTreeMgr"` through the named-heap helper
+    `thunk_FUN_030a5e24` (the helper that also creates the 48 MB
+    `"GraphicsSystem"` heap), allocates a 0x564-byte object in that heap
+    through `+0x74` (`FUN_031FA48C`, 60 B; stored at `gfx+0x20`), builds
+    a method tree from the worker descriptor (`FUN_030a2b20` +
+    `FUN_030a18b8`; stored at `gfx+0x1C`), and finishes with `+0x6C`
+    (`FUN_0309C81C`, 88 B). Frame scheduling therefore lives in the
+    **sead MethodTree**, which drives the `RootTask` virtuals; how the
+    tree reaches `present-B` is the next link to reconstruct.
 
 ## Evidence quality
 

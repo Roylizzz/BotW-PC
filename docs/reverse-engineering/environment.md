@@ -61,6 +61,11 @@ analyzeHeadless <your-projects-dir> BotW \
 analyzeHeadless <your-projects-dir> BotW -process U-King.rpx -noanalysis \
   -postScript fix_primary_imports.java
 
+# decompile an address even when the auto-analysis did not create the
+# function there: DecompileAt creates it on the fly (writable program)
+analyzeHeadless <your-projects-dir> BotW -process U-King.rpx -noanalysis \
+  -postScript DecompileAt.java out.c 0xADDR [0xADDR ...]
+
 # later: read-only passes on the analyzed program
 analyzeHeadless <your-projects-dir> BotW -process U-King.rpx -noanalysis -readOnly \
   -scriptPath tools/ghidra-scripts \
