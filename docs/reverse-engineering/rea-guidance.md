@@ -1,6 +1,6 @@
 # REA, Ghidra and PowerPC RPX analysis workflow
 
-REA is an evidence-oriented reverse-engineering CLI/MCP, not a Wii U-to-PC port generator. Its experimental Ghidra Windows P0 admission excludes PowerPC Wii U RPX. **For U-King.rpx on Windows use direct Ghidra 12.1.x headless + an RPX/RPL loader extension**, plus local rpxinfo/ppcx. Do not treat REA connectivity as proof that Ghidra can analyze this binary through REA.
+REA is an evidence-oriented reverse-engineering CLI/MCP, not a Wii U-to-PC port generator. Its experimental Ghidra Windows P0 admission excludes PowerPC Wii U RPX. **For U-King.rpx on Windows use direct Ghidra 12.1.x headless + an RPX/RPL loader extension**, plus local rpxinfo/ppcx. Do not treat REA connectivity as proof that Ghidra can analyze this binary through REA. (Measured 2026-10-18 on v208: REA accepts the file identity but every candidate provider rejects the target — `ghidra` `target_format_unsupported`, `hopper` `architecture_unsupported`, `ida` `not_configured`; the direct headless path is verified working.)
 
 ## Recommended sequence
 

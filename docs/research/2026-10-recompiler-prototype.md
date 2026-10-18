@@ -39,13 +39,14 @@ first GX2 frame?
      this execution model because every register lives in one shared `Cpu`.
    - Translation ranges use the union of both sets: **200,900 starts**.
 
-3. **Instruction coverage** (9,248,515 words): **97.00% supported**,
-   2.96% known-but-unsupported, 0.04% unknown/data. The unsupported mass is
-   concentrated: `psq_l` 118,005, `psq_st` 93,411, `lmw` 33,884, `stmw`
-   21,568, `frsqrte` 4,538, `ps_rsqrte` 1,238, `ps_res` 686, `fres` 65,
-   `tw` 135, plus a thin tail of unallocated `op31` XOs. Implementing the
-   paired-single memory ops, the block moves and the estimate family lifts
-   coverage above 99.9%.
+3. **Instruction coverage** (9,248,515 words): **97.71% supported**
+   (9,037,035), 2.29% known-but-unsupported (211,416), 0.00% unknown/data
+   (64). Re-measured on 2026-10-18 with the corrected decoder; the earlier
+   97.00% / 2.96% / 0.04% snapshot predated both the audit fixes and the
+   completed block-move/estimate support. The unsupported mass is two
+   instructions — `psq_l` 118,005 and `psq_st` 93,411 — plus a 64-word
+   unknown/data tail (`invalid-0` 47, `op31-xo375` 11, `op0` 6).
+   Implementing the paired-single memory ops lifts coverage above 99.9%.
 
 4. **Import model validated on the real module.** 445 slots (437 functions,
    8 data). 16,682 REL24 sites split into **16,522 `bl` calls and 160 `b`
@@ -91,10 +92,26 @@ first GX2 frame?
    with an address + register dump. `PPCX_HLE_TRACE=1` logs every HLE call,
    `PPCX_HLE_STRICT=1` aborts on the first.
 
+8. **Audit correction pass (2026-10-18).** An independent source audit fixed
+   thirteen semantic defects in the runtime ABI, the decoder and the
+   translator (PPC-001…PPC-013: rotate mask, `lswi`/`stswi` group advance,
+   `bcl` link handling, CR0 only on Rc, `mulli` sign, `cmpli`
+   zero-extension, r0-as-literal in `addic`/`subfic`/`cmpi`/`cmpli`,
+   `lwsync` codegen, `neg` carry, OE=1 decoding, divide edge cases, OE
+   operand aliasing, `nego` overflow). Verification: 185 compiled synthetic
+   programs compared against an independent oracle, every fix re-introduced
+   as a mutation and caught (10/10), 94 automated tests green, and the
+   coverage table above re-measured. v208 itself contains no OE=1
+   instruction, no `bcl` with LK and no `lwsync`, so those defects were
+   latent in this title; the rotate-mask fix still affects 194,957
+   instructions the module executes. See
+   [the audit](../audits/2026-10-18-code-audit.md).
+
 ## Evidence quality
 
-- **Observed:** all metrics above, produced by our tools on our own copy;
-  the Ghidra census is a local comparison artifact only.
+- **Observed:** all metrics above, produced by our tools on our own copy
+  (coverage re-measured 2026-10-18 after the audit fixes); the Ghidra
+  census is a local comparison artifact only.
 - **Derived:** the interpretation of `.rodata` ADDR32 entries as code
   pointers (validated by sampling), and the tail-call reading of
   `b`-to-import sites (decided by the relocation, not by the stored field).
@@ -114,7 +131,7 @@ first GX2 frame?
   `FUN_02c5e5f4` → … → `FUN_0309bbb0`, the only `GX2Init` site at
   `0x0309BC80`) with dispatch tracing, then model GX2 calls as
   log-only no-ops and count frames before attempting any real rendering.
-- **Opcode gaps:** `psq_l`/`psq_st`, `lmw`/`stmw`, `fres`/`frsqrte`/
-  `ps_res`/`ps_rsqrte`, `tw`.
+- **Opcode gaps:** `psq_l`/`psq_st` — the entire remaining 2.29%
+  known-unsupported mass.
 - **Scale test:** a `--follow` stress run from the entry point to measure
   translation throughput and generated-code size for the full closure.

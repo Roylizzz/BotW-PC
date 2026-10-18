@@ -2,6 +2,8 @@
 
 **Baseline:** main at 9f63ee39c656bfd3f1e906827d4ae6830d2fda3c. **Scope:** source inspection and test review, not a full runtime/game execution. Findings below are source-level defects or implementation gaps and need synthetic regression tests before being marked closed.
 
+**Status on the audit branch (`audit/2026-10-18-integral-audit`, re-verified 2026-10-18):** PPC-001…PPC-013 are fixed with regression tests — the differential harness compiles 185 synthetic programs and every defect mutation re-introduced in the sources is detected (10/10). RUN-001…RUN-006 stay open (tracked by the [implementation plan](../architecture/implementation-plan.md)); RUN-007 is partially addressed (CI runs the node suites and C syntax checks; the compiled-harness job is pending); RUN-008 no longer reproduces (the architecture README now records ADR-0002). Evidence under *Fix verification results*.
+
 | ID | Severity | Location | Observation | Acceptance |
 |---|---|---|---|---|
 | PPC-001 | P0 | src/runtime/include/ppcx_abi.h:ppcx_mask_mb_me | PowerPC MSB-indexed masks are incorrectly generated. MB=0, ME=0 currently produces 0x00000001 instead of 0x80000000 | All 1,024 MB/ME pairs checked against independent oracle |
@@ -13,6 +15,10 @@
 | PPC-007 | P0 | translate.js | addic/subfic/cmpi/cmpli substitute literal 0 for RA=0 where they must read r0 (unlike addi/addis) | r0 nonzero synthetic tests for each opcode |
 | PPC-008 | P0 | decode.js, translate.js | lwsync decodes as supported, but no translator case is emitted | Generates correct memory fence; compiled test |
 | PPC-009 | P1 | ppcx_abi.h:ppcx_neg | neg helper modifies XER.CA improperly | CA unaffected by neg; OE handling independently validated |
+| PPC-010 | P0 | tools/ppcx/lib/decode.js | XO-form opcodes with OE=1 never decode: the 10-bit extended-opcode lookup includes the OE bit, so `addo`…`divwo` fall through as unknown | OE=1 forms decode as the XO instruction with `oe: true`; unit tests |
+| PPC-011 | P1 | ppcx_abi.h:ppcx_divw/divwu | Divide edge semantics wrong (divide-by-zero quotient/sign, INT_MIN/−1) and the OE bit not modelled | divw/divwu match the two reference implementations: quotient values and OV/SO |
+| PPC-012 | P1 | tools/ppcx/lib/translate.js (OE forms) | Generated OE block read the operands *after* storing the result, so rT aliasing rA/rB computed overflow from the new value | Operands captured before the store; aliasing cases match the oracle |
+| PPC-013 | P1 | tools/ppcx/lib/translate.js (neg OE) | `nego` used an add-style overflow expression that can never fire; the references set OV only for 0x80000000 | `nego` sets OV iff the source is 0x80000000 |
 | RUN-001 | P0 | src/runtime/src/ppcx_runtime.c | All HLE imports currently return with CPU unchanged | Typed HLE registry, strict unknown-import failure, OS models |
 | RUN-002 | P0 | tools/ppcx / runtime | Missing loaded .rodata/.data/.bss image and applied data relocations | Synthetic loaded sections and relocation fixtures |
 | RUN-003 | P1 | ppcx_abi.h:ppcx_ptr | Unchecked raw host pointer arithmetic and approximately 3.03-GiB flat guest arena | Checked address/permissions, predictable guest fault |
@@ -22,9 +28,9 @@
 | RUN-007 | P1 | GitHub repo metadata | No workflow runs, releases or protection on main at review time | Add CI and required checks; then protect branch |
 | RUN-008 | P2 | docs/architecture/README.md | Claims port strategy undecided although ADR-0002 was accepted | Sync with actual decision |
 
-**Tests:** Source declares 75 JS test cases across ppcx and rpxinfo. Many translation tests assert strings rather than compiling and running emitted code. Tests were inspected, not executed for this audit. No claim about entire suite passing.
+**Tests:** Before the audit the source declared 75 JS cases and none had been executed by the auditor. On the audit branch the suites were extended and executed on 2026-10-18: **94/94 pass** — 79 in `tools/ppcx`, 12 in `tools/rpxinfo`, 3 in `tests/isa`. The new differential harness compiles 185 synthetic guest programs with a real C compiler (TCC 0.9.27 locally; harness CI pending) and compares complete integer machine state against an independent oracle instead of asserting emitted strings.
 
-**Published metrics:** The research note reports around 97% decoder coverage on a contributor-local v208 RPX plus one compiled demonstration reaching a traced proc_ui HLE call. These do NOT imply playable game, 97% instruction semantic equivalence, working Cafe OS, or graphics.
+**Published metrics:** Re-measured on the audit branch with the corrected decoder: **97.71% supported** (9,037,035 of 9,248,515 words), **2.29% known-unsupported** (211,416: only `psq_l` and `psq_st`) and **64 unknown/data words (0.00%)**; 96,874 discovered function starts, 89,438 fully supported. One compiled end-to-end demonstration still reaches the traced proc_ui HLE call. None of this implies a playable game, 97.71% instruction semantic equivalence, working Cafe OS, or graphics.
 
 ## Fix verification protocol
 
@@ -35,4 +41,17 @@
 5. Test safe failure on out-of-bounds memory, unknown relocations, unsupported imports and truncated RPX files.
 6. Run actual game tests only locally with contributor-owned game files. Never upload generated C, disassembly, assets, dumps or keys.
 
+Steps 1–4 were executed for the PPC items on the audit branch (below); steps 5–6 remain mandatory for loader/runtime work.
+
 See [port survey](../research/2026-10-native-port-patterns.md) and [implementation plan](../architecture/implementation-plan.md).
+
+## Fix verification results (audit branch, 2026-10-18)
+
+- **Differential harness:** `node tests/isa/run.js` → `isa: 185 programs, compiled with <TCC 0.9.27>, 379 state lines` / `isa: OK, generated code matches the independent oracle`. The rotate-mask helper was additionally swept over all 1,024 (MB, ME) pairs against a bit-by-bit model of the ISA and against the reference emulator's construction; the pre-fix helper was wrong for 962 of 1,024 pairs.
+- **Mutation check:** every fixed defect was re-introduced in a child process and the harness had to fail (`build/audit/mutation-check.js`, local, git-ignored). All 10 mutations detected: PPC-001 (37 mismatching cases), PPC-002 (3), PPC-004 (142), PPC-005 (1), PPC-007 (3), PPC-009 (1), PPC-010 (20), PPC-011 (6), PPC-012 (2), PPC-013 (3). PPC-003/006/008 are pinned by unit tests (`bcl` LR + dispatch, `cmpli` zero-extension, `lwsync` codegen).
+- **Suites:** 94/94 across `tools/ppcx` (79), `tools/rpxinfo` (12) and `tests/isa` (3).
+- **Latency in this title** (census with the corrected decoder): v208 contains no OE=1 instruction (`oeSet 0`), no `bcl` with LK (`bcLk 0`) and no `lwsync` — PPC-008/010/012/013 were latent *here* but wrong in general. PPC-001 affects 194,957 rotate-mask instructions, PPC-005 117 negative `mulli`, PPC-011 656 divides; `neg` occurs 7,471 times.
+- **Runtime demo:** `translate --fn 0x031FA4CC --follow 2` re-run: 1 function, 3 instructions, HLE `proc_ui.ProcUIInit`, 0 unsupported, 0 warnings; TCC compiles the emitted C (1,744-byte object).
+- **Tooling path re-verified:** direct Ghidra 12.1.4 headless is the only deep-analysis path on Windows for this RPX — a read-only pass opened the local program as `PowerPC:BE:32:Gekko_Broadway_Espresso` and exported 97,365 functions; REA accepts the file identity but every candidate provider refuses it (see [environment](../reverse-engineering/environment.md)).
+
+Open work stays tracked as RUN-001…RUN-007 above and in Phase 2B/2C of the implementation plan; nothing here claims game boot, HLE correctness or rendering.

@@ -21,7 +21,9 @@
 
 - [x] Set up the REA toolchain (Node 24, REA 6.5.0) and a deep-analysis
       provider (Ghidra 12.1.4 with a PowerPC/RPX loader; see
-      `docs/reverse-engineering/environment.md`).
+      `docs/reverse-engineering/environment.md`). REA accepts the RPX
+      identity but admits no provider for it on Windows — deep analysis
+      runs through Ghidra headless directly.
 - [x] Inventory a contributor's own copy: file layout (`content/`, update
       data), executable identification (`code/U-King.rpx`, base + v208).
 - [ ] Format notes: boot flow and resource formats (BYML, AAMP, SARC, BFRES,
@@ -67,11 +69,12 @@ Deliverable: `docs/architecture/` decision record.
 
 ## Phase 2 stabilization gate — mandatory before first light
 
-- [ ] Resolve source-level PowerPC semantic defects PPC-001..PPC-009, each with a failing synthetic regression first.
-- [ ] Compile and execute generated C against a separate reference oracle; measure state/memory correctness, not only opcode decode counts.
+- [x] Resolve source-level PowerPC semantic defects PPC-001..PPC-013, each with a failing synthetic regression first (compiled differential harness + 10/10 mutation check; see the audit).
+- [x] Compile and execute generated C against a separate reference oracle for the integer core (185 programs × full register/flag/memory comparison); FP and branch/system coverage remain open.
 - [ ] Implement authenticated RPX section/data image, relocation handling, memory checks and typed, non-silent Cafe OS HLE.
 - [ ] Establish deterministic headless boot checkpoints, content-addressed analysis caches and scalable generated-C shards.
-- [ ] Configure PR CI and test on local, user-owned dumps without uploading derived Nintendo code.
+- [x] Configure PR CI on synthetic sources only (`node-tools`, C syntax — no game input); game-derived verification stays a local, user-run step.
+- [ ] Extend PR CI to the compiled ISA harness (runs locally today: `node tests/isa/run.js`).
 
 See the [audit](docs/audits/2026-10-18-code-audit.md), [implementation plan](docs/architecture/implementation-plan.md), and [comparative research](docs/research/2026-10-native-port-patterns.md).
 

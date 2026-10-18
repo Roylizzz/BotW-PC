@@ -4,17 +4,17 @@
 
 ## Phase 2A — CPU correctness gate (P0)
 
-- [ ] Correct PPC-001..PPC-009 from [the code audit](../audits/2026-10-18-code-audit.md) with regression tests written first.
-- [ ] Build independent differential oracle for synthetic PowerPC sequences and compare GPR/FPR raw bits, CR, LR, CTR, XER, guest memory and traps.
-- [ ] Compile generated C in tests using the host C compiler; assert actual behavior beyond emitted text.
-- [ ] Run tests automatically across supported Windows/Linux host toolchains and reject unsupported machine-code features explicitly.
-- [ ] Publish metrics separately for decoded words, behaviorally verified instructions, compiled/reachable functions and actual HLE implementations.
+- [x] Correct PPC-001..PPC-013 from [the code audit](../audits/2026-10-18-code-audit.md) with regression tests written first (10/10 mutations detected — see the audit's fix verification results).
+- [ ] Build independent differential oracle for synthetic PowerPC sequences and compare GPR/FPR raw bits, CR, LR, CTR, XER, guest memory and traps. *(Started: the integer core compares GPR/XER(OV/SO/CA)/CR/LR/CTR and memory windows over 185 compiled programs; FPR raw bits and trap conditions pending.)*
+- [x] Compile generated C in tests using the host C compiler; assert actual behavior beyond emitted text (TCC locally; the compiled-harness CI job is pending).
+- [ ] Run tests automatically across supported Windows/Linux host toolchains and reject unsupported machine-code features explicitly. *(Started: CI runs the JS suites on Linux with Node 22/24; the compiled harness runs locally; Windows verified locally; unsupported machine code stops with `PPCX_UNIMPL`.)*
+- [ ] Publish metrics separately for decoded words, behaviorally verified instructions, compiled/reachable functions and actual HLE implementations. *(Started: decoded-word coverage, the compiled harness and HLE stubs are reported separately; "verified" currently means harness coverage, not the whole module.)*
 
 **Exit:** all new synthetic regressions pass, original tests pass, and no known P0 semantics defect remains.
 
 ## Phase 2B — RPX loader, data relocations and Cafe OS
 
-- [ ] Identify supported v208 source by cryptographic digest and version manifest (local input only).
+- [ ] Identify supported v208 source by cryptographic digest and version manifest (local input only). *(v208 SHA-256 recorded in [environment.md](../reverse-engineering/environment.md); version manifest still open.)*
 - [ ] Map all allocated sections with validated ranges, .bss zero-fill, proper imports, relocations and data pointers.
 - [ ] Replace raw pointer handling with checked region/address semantics and deterministic guest exceptions.
 - [ ] Implement typed HLE registry with tested coreinit, proc_ui and minimum input/memory services; no silent success from unknown calls.

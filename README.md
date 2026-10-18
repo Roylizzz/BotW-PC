@@ -4,9 +4,11 @@ An open, **clean-room** research project studying *The Legend of Zelda: Breath
 of the Wild* — with the long-term goal of running it natively on PC.
 
 > **Status: Phase 2 — feasibility signed off (ADR-0002); prototype in
-> progress.** The analysis environment is in place (REA + Ghidra), the RPX
-> format is documented, and the prototype (`tools/ppcx` + `src/runtime`)
-> already translates and runs real functions from a contributor's own copy.
+> progress.** The analysis environment is in place (REA + direct Ghidra
+> headless), the RPX format is documented, and the prototype
+> (`tools/ppcx` + `src/runtime`) translates and runs real functions from a
+> contributor's own copy. The 2026-10-18 audit fixed PPC-001…PPC-013 and
+> re-verified them with a compiled differential harness.
 > See [ROADMAP.md](ROADMAP.md).
 
 ## What this project is
@@ -60,7 +62,7 @@ Read the full policy: [DISCLAIMER.md](DISCLAIMER.md) and
 - [Stabilization/implementation plan](docs/architecture/implementation-plan.md)
 - [REA and direct Ghidra guidance](docs/reverse-engineering/rea-guidance.md)
 
-The current ~97% decoded-instruction coverage is **not** 97% behavioral correctness or game compatibility. The prototype does not boot a playable game; section loading, Cafe OS services, and GPU presentation are unfinished. Known PowerPC semantic defects must be verified and fixed before claiming first-light progress.
+The corrected decoder covers **97.71%** of the module's words (2.29% known-unsupported paired-single ops, 64 unknown) and the fixed integer semantics are mutation-verified — coverage is still **not** behavioral correctness or game compatibility. The prototype does not boot a playable game; section loading, Cafe OS services, and GPU presentation are unfinished (Phase 2B/2C of the implementation plan).
 
 ## Legal
 
