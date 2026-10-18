@@ -27,6 +27,9 @@ result for Phase 2 planning?
    `nn::nfp::StartDetection`). **1,024 functions carry a name**: 600
    `thunk_*` wrappers, 125 `GX2*` imports, 50 C++-mangled SDK names,
    plus analyzer-generated `caseD_*` labels and other import names.
+   Decompiled calls show the real import names after running the loader's
+   `fix_primary_imports.java` (it makes the imported references primary);
+   without that step they resolve against placeholder addresses.
 3. **Auto-analysis cost**: **1,427 s (~24 min)** on a 2-vCPU / 7.7 GiB
    VM with a 3 GiB heap. Slowest analyzers: Stack 430 s, PowerPC
    Constant Reference 355 s, Decompiler Switch Analysis 303 s,

@@ -55,6 +55,12 @@ analyzeHeadless <your-projects-dir> BotW \
   -scriptPath tools/ghidra-scripts \
   -postScript ListSummary.java
 
+# one-time fix after import: make the loader's imported references primary
+# (ships with the RPX loader extension; without it, calls into Cafe OS
+# decompile against placeholder addresses such as FUN_04004668)
+analyzeHeadless <your-projects-dir> BotW -process U-King.rpx -noanalysis \
+  -postScript fix_primary_imports.java
+
 # later: read-only passes on the analyzed program
 analyzeHeadless <your-projects-dir> BotW -process U-King.rpx -noanalysis -readOnly \
   -scriptPath tools/ghidra-scripts \
