@@ -24,6 +24,8 @@ const SHF_ALLOC = 0x2;
 const SHF_EXECINSTR = 0x4;
 const SHF_RPL_ZLIB = 0x08000000;
 
+const SHT_SYMTAB = 0x2;
+const SHT_STRTAB = 0x3;
 const SHT_NOBITS = 0x8;
 
 const SECTION_TYPES = {
@@ -39,6 +41,22 @@ const SECTION_TYPES = {
   0x9: "REL",
   0xa: "SHLIB",
   0xb: "DYNSYM",
+};
+
+const SYMBOL_TYPES = {
+  0x0: "NOTYPE",
+  0x1: "OBJECT",
+  0x2: "FUNC",
+  0x3: "SECTION",
+  0x4: "FILE",
+  0x5: "COMMON",
+  0x6: "TLS",
+};
+
+const SYMBOL_BINDINGS = {
+  0x0: "LOCAL",
+  0x1: "GLOBAL",
+  0x2: "WEAK",
 };
 
 class RpxError extends Error {}
@@ -111,6 +129,14 @@ function sectionFlagsHuman(flags) {
   return parts.join("|") || "-";
 }
 
+function symbolTypeName(type) {
+  return SYMBOL_TYPES[type] ?? `0x${type.toString(16)}`;
+}
+
+function symbolBindingName(bind) {
+  return SYMBOL_BINDINGS[bind] ?? `0x${bind.toString(16)}`;
+}
+
 function readSectionData(buf, section) {
   if (section.size === 0) {
     return { data: Buffer.alloc(0), compressed: false, compressedSize: 0, declaredSize: 0 };
@@ -180,15 +206,51 @@ function addrToSection(parsed, addr) {
   );
 }
 
+/**
+ * Reads the symbol table (.symtab) using the standard 16-byte Elf32_Sym
+ * layout: st_name(4), st_value(4), st_size(4), st_info(1), st_other(1),
+ * st_shndx(2). Names are resolved through the linked string table.
+ */
+function readSymbols(buf, parsed) {
+  const symtab = parsed.sections.find((s) => s.type === SHT_SYMTAB);
+  if (!symtab) return [];
+  const { data: symData } = readSectionData(buf, symtab);
+  const strtab = parsed.sections[symtab.link];
+  const strData =
+    strtab && strtab.type === SHT_STRTAB ? readSectionData(buf, strtab).data : Buffer.alloc(0);
+  const entsize = symtab.entsize > 0 ? symtab.entsize : 16;
+  const count = Math.floor(symData.length / entsize);
+  const symbols = [];
+  for (let i = 0; i < count; i++) {
+    const o = i * entsize;
+    const nameOffset = symData.readUInt32BE(o);
+    const info = symData[o + 12];
+    symbols.push({
+      index: i,
+      name: nameOffset < strData.length ? readCString(strData, nameOffset) : "",
+      value: symData.readUInt32BE(o + 4),
+      size: symData.readUInt32BE(o + 8),
+      type: info & 0xf,
+      bind: (info >> 4) & 0xf,
+      shndx: symData.readUInt16BE(o + 14),
+    });
+  }
+  return symbols;
+}
+
 module.exports = {
   RpxError,
   parseHeader,
   parseRpx,
   readSectionData,
+  readSymbols,
   findSection,
   addrToSection,
   sectionTypeName,
   sectionFlagsHuman,
+  symbolTypeName,
+  symbolBindingName,
   SHF_RPL_ZLIB,
+  SHT_SYMTAB,
   EM_PPC,
 };

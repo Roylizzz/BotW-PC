@@ -6,7 +6,8 @@
  * Every byte of this fixture is authored here; no data from any game is
  * used. The fixture mimics the structural traits we care about: ELF32 BE
  * header, custom RPX e_type, no program headers, a plain section, a
- * zlib-compressed section with a 4-byte size prefix, and a string table.
+ * zlib-compressed section with a 4-byte size prefix, a string table, and
+ * a symbol table.
  */
 
 const zlib = require("zlib");
@@ -31,7 +32,7 @@ function build() {
   const textz = Buffer.concat([Buffer.from([0, 0, 0, 0]), deflated]);
   writeU32(textz, 0, textPayload.length);
 
-  const strtab = Buffer.concat([
+  const shstr = Buffer.concat([
     Buffer.from([0]),
     Buffer.from(".stub", "utf8"),
     Buffer.from([0]),
@@ -39,16 +40,54 @@ function build() {
     Buffer.from([0]),
     Buffer.from(".shstrtab", "utf8"),
     Buffer.from([0]),
+    Buffer.from(".symtab", "utf8"),
+    Buffer.from([0]),
+    Buffer.from(".strtab", "utf8"),
+    Buffer.from([0]),
   ]);
-  const nameOff = { stub: 1, textz: 7, shstrtab: 14 };
+  const shNameOff = { stub: 1, textz: 7, shstrtab: 14, symtab: 24, strtab: 32 };
+
+  const symstr = Buffer.concat([
+    Buffer.from([0]),
+    Buffer.from("imported_func", "utf8"),
+    Buffer.from([0]),
+    Buffer.from("data_global", "utf8"),
+    Buffer.from([0]),
+    Buffer.from("local_label", "utf8"),
+    Buffer.from([0]),
+  ]);
+  const symNameOff = { imported: 1, data: 15, local: 27 };
+
+  const symtab = Buffer.alloc(4 * 16);
+  let o = 16; // entry 0 is the null symbol (zeroed)
+  writeU32(symtab, o, symNameOff.imported);
+  writeU32(symtab, o + 4, 0xc0000000);
+  writeU32(symtab, o + 8, 0);
+  symtab[o + 12] = (1 << 4) | 2; // GLOBAL FUNC
+  writeU16(symtab, o + 14, 11);
+  o = 32;
+  writeU32(symtab, o, symNameOff.data);
+  writeU32(symtab, o + 4, 0x10000000);
+  writeU32(symtab, o + 8, 4);
+  symtab[o + 12] = (1 << 4) | 1; // GLOBAL OBJECT
+  writeU16(symtab, o + 14, 3);
+  o = 48;
+  writeU32(symtab, o, symNameOff.local);
+  writeU32(symtab, o + 4, 0x02000020);
+  writeU32(symtab, o + 8, 0);
+  symtab[o + 12] = (0 << 4) | 0; // LOCAL NOTYPE
+  writeU16(symtab, o + 14, 2);
 
   const headerSize = 64;
-  const sectionCount = 4;
-  const sectionTableSize = sectionCount * 40;
-  const stubOffset = 0x100;
-  const textzOffset = 0x200;
-  const strtabOffset = 0x400;
-  const totalSize = strtabOffset + strtab.length + 0x40;
+  const sectionCount = 6;
+  // The section-header array spans [64, 64 + 6*40 = 304); all section
+  // data must start after it to avoid clobbering header fields.
+  const stubOffset = 0x200;
+  const textzOffset = 0x300;
+  const shstrOffset = 0x500;
+  const symtabOffset = 0x600;
+  const strtabOffset = 0x700;
+  const totalSize = strtabOffset + symstr.length + 0x40;
   const buf = Buffer.alloc(totalSize);
 
   // --- ELF header ---
@@ -79,7 +118,7 @@ function build() {
 
   // section 0: null (already zeroed)
   // section 1: .stub — PROGBITS, ALLOC|EXEC
-  writeU32(buf, sec(1), nameOff.stub);
+  writeU32(buf, sec(1), shNameOff.stub);
   writeU32(buf, sec(1) + 4, 1);
   writeU32(buf, sec(1) + 8, 0x6);
   writeU32(buf, sec(1) + 12, 0x02000000);
@@ -88,7 +127,7 @@ function build() {
   writeU32(buf, sec(1) + 32, 4);
 
   // section 2: .textz — PROGBITS, ALLOC|EXEC|RPL_ZLIB
-  writeU32(buf, sec(2), nameOff.textz);
+  writeU32(buf, sec(2), shNameOff.textz);
   writeU32(buf, sec(2) + 4, 1);
   writeU32(buf, sec(2) + 8, 0x08000006);
   writeU32(buf, sec(2) + 12, 0x02000020);
@@ -97,17 +136,50 @@ function build() {
   writeU32(buf, sec(2) + 32, 4);
 
   // section 3: .shstrtab — STRTAB
-  writeU32(buf, sec(3), nameOff.shstrtab);
+  writeU32(buf, sec(3), shNameOff.shstrtab);
   writeU32(buf, sec(3) + 4, 3);
-  writeU32(buf, sec(3) + 16, strtabOffset);
-  writeU32(buf, sec(3) + 20, strtab.length);
+  writeU32(buf, sec(3) + 16, shstrOffset);
+  writeU32(buf, sec(3) + 20, shstr.length);
   writeU32(buf, sec(3) + 32, 1);
+
+  // section 4: .symtab — SYMTAB, sh_link -> .strtab (index 5)
+  writeU32(buf, sec(4), shNameOff.symtab);
+  writeU32(buf, sec(4) + 4, 2);
+  writeU32(buf, sec(4) + 16, symtabOffset);
+  writeU32(buf, sec(4) + 20, symtab.length);
+  writeU32(buf, sec(4) + 24, 5);
+  writeU32(buf, sec(4) + 28, 1);
+  writeU32(buf, sec(4) + 32, 4);
+  writeU32(buf, sec(4) + 36, 16);
+
+  // section 5: .strtab — STRTAB
+  writeU32(buf, sec(5), shNameOff.strtab);
+  writeU32(buf, sec(5) + 4, 3);
+  writeU32(buf, sec(5) + 16, strtabOffset);
+  writeU32(buf, sec(5) + 20, symstr.length);
+  writeU32(buf, sec(5) + 32, 1);
 
   stub.copy(buf, stubOffset);
   textz.copy(buf, textzOffset);
-  strtab.copy(buf, strtabOffset);
+  shstr.copy(buf, shstrOffset);
+  symtab.copy(buf, symtabOffset);
+  symstr.copy(buf, strtabOffset);
 
-  return { buffer: buf, expected: { stub, textPayload, deflated, names: ["", ".stub", ".textz", ".shstrtab"] } };
+  return {
+    buffer: buf,
+    expected: {
+      stub,
+      textPayload,
+      deflated,
+      names: ["", ".stub", ".textz", ".shstrtab", ".symtab", ".strtab"],
+      symbols: [
+        { name: "", value: 0, size: 0, type: 0, bind: 0, shndx: 0 },
+        { name: "imported_func", value: 0xc0000000, size: 0, type: 2, bind: 1, shndx: 11 },
+        { name: "data_global", value: 0x10000000, size: 4, type: 1, bind: 1, shndx: 3 },
+        { name: "local_label", value: 0x02000020, size: 0, type: 0, bind: 0, shndx: 2 },
+      ],
+    },
+  };
 }
 
 module.exports = { build };

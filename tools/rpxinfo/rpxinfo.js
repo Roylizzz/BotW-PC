@@ -6,10 +6,13 @@ const {
   RpxError,
   parseRpx,
   readSectionData,
+  readSymbols,
   findSection,
   addrToSection,
   sectionTypeName,
   sectionFlagsHuman,
+  symbolTypeName,
+  symbolBindingName,
 } = require("./lib/rpx");
 
 function die(message) {
@@ -21,12 +24,14 @@ function usage() {
   console.log(`rpxinfo — inspect Wii U RPX/RPL executables (original tool, MIT)
 
 Usage:
-  rpxinfo info <file.rpx> [--json]
-  rpxinfo dump <file.rpx> <section name or index> --out <file>
-  rpxinfo addr <file.rpx> <hex-address>
+  rpxinfo info    <file.rpx> [--json]
+  rpxinfo symbols <file.rpx> [--json] [--func] [--defined] [--limit N]
+  rpxinfo dump    <file.rpx> <section name or index> --out <file>
+  rpxinfo addr    <file.rpx> <hex-address>
 
 Notes:
   - Runs entirely locally on files you provide; never modifies them.
+  - 'symbols' reads the .symtab table (standard 16-byte Elf32_Sym layout).
   - 'dump' writes the (decompressed) section bytes to --out.
     Keep dumps local; extracted data does not belong in this repository.
 `);
@@ -122,6 +127,67 @@ function commandInfo(args) {
   }
 }
 
+function commandSymbols(args) {
+  const file = args[0];
+  if (!file) die("usage: rpxinfo symbols <file.rpx> [--json] [--func] [--defined] [--limit N]");
+  const json = args.includes("--json");
+  const onlyFunc = args.includes("--func");
+  const onlyDefined = args.includes("--defined");
+  const limitIndex = args.indexOf("--limit");
+  const limit = limitIndex >= 0 ? parseInt(args[limitIndex + 1], 10) : Infinity;
+  if (limitIndex >= 0 && !Number.isFinite(limit)) die("--limit needs a number");
+
+  const { buf, parsed } = load(file);
+  const all = readSymbols(buf, parsed);
+  if (all.length === 0) die("no symbol table (.symtab) found");
+
+  let symbols = all;
+  if (onlyFunc) symbols = symbols.filter((s) => s.type === 2);
+  if (onlyDefined) symbols = symbols.filter((s) => s.shndx !== 0);
+
+  const shown = symbols.slice(0, Number.isFinite(limit) ? limit : symbols.length);
+
+  if (json) {
+    console.log(
+      JSON.stringify(
+        shown.map((s) => ({
+          index: s.index,
+          name: s.name,
+          value: hex(s.value),
+          size: s.size,
+          type: symbolTypeName(s.type),
+          bind: symbolBindingName(s.bind),
+          shndx: s.shndx,
+        })),
+        null,
+        2
+      )
+    );
+    return;
+  }
+
+  const filterNote = symbols.length !== all.length ? ` (of ${all.length} total)` : "";
+  if (shown.length !== symbols.length) {
+    console.log(`symbols: showing ${shown.length} of ${symbols.length}${filterNote}`);
+  } else {
+    console.log(`symbols: ${shown.length}${filterNote}`);
+  }
+  for (const s of shown) {
+    console.log(
+      String(s.index).padStart(5) +
+        " " +
+        symbolBindingName(s.bind).padEnd(7) +
+        symbolTypeName(s.type).padEnd(8) +
+        ("shndx=" + s.shndx).padEnd(9) +
+        hex(s.value) +
+        "  size=" +
+        String(s.size).padStart(7) +
+        "  " +
+        s.name
+    );
+  }
+}
+
 function commandDump(args) {
   const file = args[0];
   const selector = args[1];
@@ -169,10 +235,12 @@ if (!command || command === "help" || command === "--help" || command === "-h") 
   usage();
 } else if (command === "info") {
   commandInfo(rest);
+} else if (command === "symbols") {
+  commandSymbols(rest);
 } else if (command === "dump") {
   commandDump(rest);
 } else if (command === "addr") {
   commandAddr(rest);
 } else {
-  die(`unknown command '${command}' (try: info, dump, addr)`);
+  die(`unknown command '${command}' (try: info, symbols, dump, addr)`);
 }

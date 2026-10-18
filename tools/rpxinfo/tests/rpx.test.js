@@ -10,6 +10,7 @@ const { execFileSync } = require("node:child_process");
 const {
   parseRpx,
   readSectionData,
+  readSymbols,
   findSection,
   addrToSection,
   sectionFlagsHuman,
@@ -22,7 +23,7 @@ test("parses the synthetic header", () => {
   const { header } = parseRpx(buffer);
   assert.equal(header.e_machine, 20);
   assert.equal(header.e_type, 0xfe01);
-  assert.equal(header.e_shnum, 4);
+  assert.equal(header.e_shnum, 6);
   assert.equal(header.e_shstrndx, 3);
   assert.equal(header.e_phnum, 0);
   assert.equal(header.e_entry, 0x02000024);
@@ -52,6 +53,17 @@ test("keeps plain sections intact and inflates zlib sections", () => {
   assert.equal(textData.compressed, true);
   assert.ok(textData.data.equals(expected.textPayload));
   assert.equal(textData.declaredSize, expected.textPayload.length);
+});
+
+test("reads the symbol table with the standard 16-byte layout", () => {
+  const { buffer, expected } = build();
+  const parsed = parseRpx(buffer);
+  const symbols = readSymbols(buffer, parsed);
+  assert.equal(symbols.length, 4);
+  assert.deepEqual(
+    symbols.map((s) => ({ name: s.name, value: s.value, size: s.size, type: s.type, bind: s.bind, shndx: s.shndx })),
+    expected.symbols
+  );
 });
 
 test("address mapping uses logical (decompressed) sizes", () => {
@@ -89,6 +101,31 @@ test("CLI info prints a section table", () => {
     assert.match(out, /\.textz/);
     assert.match(out, /RPL_ZLIB/);
     assert.match(out, /PowerPC/);
+  } finally {
+    fs.unlinkSync(tmp);
+  }
+});
+
+test("CLI symbols lists function symbols with --func", () => {
+  const { buffer } = build();
+  const tmp = path.join(os.tmpdir(), `rpxinfo-test-${process.pid}.rpx`);
+  fs.writeFileSync(tmp, buffer);
+  try {
+    const all = execFileSync(
+      process.execPath,
+      [path.join(__dirname, "..", "rpxinfo.js"), "symbols", tmp],
+      { encoding: "utf8" }
+    );
+    assert.match(all, /imported_func/);
+    assert.match(all, /data_global/);
+
+    const onlyFunc = execFileSync(
+      process.execPath,
+      [path.join(__dirname, "..", "rpxinfo.js"), "symbols", tmp, "--func"],
+      { encoding: "utf8" }
+    );
+    assert.match(onlyFunc, /imported_func/);
+    assert.doesNotMatch(onlyFunc, /data_global/);
   } finally {
     fs.unlinkSync(tmp);
   }
