@@ -2,7 +2,8 @@
 
 - **Date:** 2026-10-18
 - **Game version:** Wii U (update v208 used for verification)
-- **Tooling:** `tools/rpxinfo` (original), local hex inspection, zlib checks
+- **Tooling:** `tools/rpxinfo` (original), local hex inspection, zlib checks,
+  Ghidra 12.1.4 + RPX/RPL loader
 - **Contributor:** @Roylizzz
 - **Source:** own copy, analyzed locally
 
@@ -27,7 +28,7 @@ What is `code/U-King.rpx`, and how do we load it into analysis tools?
      `.module_id`, `.bss`, `.thrbss` (thread-local), `.rela.text`,
      `.rela.rodata`, `.rela.data`.
    - Symbols: `.symtab` (7,728 bytes) and `.strtab` (9,525 bytes
-     decompressed) — worth inspecting for usable names.
+     decompressed) — inspected; see *Symbol table* below.
    - **System-library imports** (fimport/dimport stubs): `gx2` (graphics),
      `snd_core`, `snd_user` (audio), `h264` (video), `nn_save`, `vpad`,
      `vpadbase`, `proc_ui`, `padscore`, `coreinit`, `sysapp`, `zlib125`,
@@ -41,16 +42,32 @@ What is `code/U-King.rpx`, and how do we load it into analysis tools?
    must supply equivalents — the same problem an emulator solves with
    high-level emulation. This shapes the Phase 2 architecture decision.
 
+## Symbol table (verified)
+
+- `.symtab` uses the standard 16-byte `Elf32_Sym` layout: 483 entries,
+  437 of them `FUNC` symbols.
+- The binary publishes its **system-library imports with full names**
+  (18 `fimport_*` sections, 8-byte stubs starting at `0xC0004540`):
+  `gx2` (130), `coreinit` (142 code + 9 data), `snd_core` (62),
+  `nn_nfp` (20), `nn_boss` (18), `h264` (14), `padscore` (13),
+  `vpad` (11), `nn_save` (10), `nn_aoc` (8), `zlib125` (7),
+  `proc_ui` (6), `sysapp` (5), `nn_act` (4), `vpadbase` (2),
+  `snd_user`, `nsysnet`, `nn_ac` (1 each).
+- Exported data symbols include **Havok TLS globals** in `.thrbss`
+  (`hkThreadNumber`, `s_memoryRouter`, `hkMonitorStream` instance) —
+  the game ships with Havok physics.
+- `.text` contains **no internal function names** (stripped): internal
+  function identification is our own work from here on.
+
 ## Evidence quality
 
 - **Observed** (locally reproducible with `tools/rpxinfo`): header facts,
-  compression layout, sizes, section names.
+  compression layout, sizes, section names, symbol table contents.
 - **Sourced** (public): WiiUBrew `RPL` page confirms the format traits
   (modified ELF, zlib sections, no program headers, import/export tables).
 
 ## Open questions
 
 - Semantics of section types `0x80000003` / `0x80000004`.
-- Symbol coverage of `.symtab`/`.strtab`.
 - Reconstructing a full load image (section layout + relocations) for
   analysis is the next milestone.

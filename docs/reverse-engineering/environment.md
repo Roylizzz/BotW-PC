@@ -34,7 +34,7 @@ Notes for tooling:
 | JDK (Temurin) | 21 | ✅ (Ghidra 12.1.x requires 21+) |
 | [REA](https://github.com/morluto/rea) | 6.5.0 (npx) | ✅ CLI works |
 | [Rizin](https://rizin.re/) | 0.9.1 | ✅ (multi-arch static disassembly) |
-| [Ghidra](https://ghidra-sre.org/) | 12.1.4 | ✅ installed locally |
+| [Ghidra](https://ghidra-sre.org/) | 12.1.4 | ✅ installed locally + RPX/RPL loader extension (`CafeLoader`) |
 
 ## Platform constraints (important)
 
