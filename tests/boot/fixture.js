@@ -8,8 +8,10 @@
  *
  *   - `.text` with the boot entry, a helper reached through a direct `bl`, a
  *     strict-mode entry that calls an unmodeled import (`proc_ui.ProcUIInit`)
- *     and a fault entry that reads an unmapped address, plus a constant
- *     getter that only a `.rodata` code pointer can reach;
+ *     and a fault entry that reads an unmapped address, a constant getter
+ *     that only a `.rodata` code pointer can reach, and a tail entry whose
+ *     `b` crosses into the middle of another function's range (the mid-body
+ *     entry point is discovered by the cross-range fixpoint);
  *   - two `.fimport_*` sections whose symbols the `.rela.text` sites
  *     reference (`coreinit.memcpy`, `coreinit.OSBlockMove`,
  *     `proc_ui.ProcUIInit`), with one REL24 call site per function and an
@@ -27,7 +29,7 @@
  */
 
 const TEXT_ADDR = 0x00010000;
-const TEXT_SIZE = 0x000000e8;
+const TEXT_SIZE = 0x00000118;
 
 const SLOT_MEMCPY = 0x00020000;
 const SLOT_OSBLOCKMOVE = 0x00020008;
@@ -54,14 +56,20 @@ const SYM = {
     tls_value: 10,
 };
 
-/* Entry points the harness boots, in the order the fixture authors them. */
+/* Authored entry addresses the harness references. `tail` is booted; `split`
+ * is only the top of the range whose mid label `tail` jumps into. */
 const ENTRY = {
     boot: 0x00010000,
     helper: 0x00010048,
     strict: 0x00010090,
     fault: 0x000100b4,
     pointer: 0x000100d8,
+    split: 0x000100e8,
+    tail: 0x000100f8,
 };
+
+/* Mid-body entry that only the cross-range `b` in `func_t` reaches. */
+const TAIL_TARGET = 0x000100f0;
 
 /* ------------------------------------------------------------------ */
 /* Minimal assembler (encodings straight from the ISA tables)          */
@@ -129,11 +137,18 @@ function assemble() {
             if (symIndex !== undefined) relocs.push({ offset: site, type: 10, sym: symIndex, addend: 0 });
             return api.word(((18 << 26) | (disp & 0x03fffffc) | 1) >>> 0);
         },
-        /* Direct `bl` to a label emitted later; patched once all labels exist. */
-        blLabel(label) {
-            patches.push({ index: words.length, label });
+        /* Direct `bl`/`b` to a label emitted later; patched once all labels
+         * exist (`lk` selects the link bit). */
+        branchLabel(label, lk) {
+            patches.push({ index: words.length, label, lk });
             words.push(0);
             return api;
+        },
+        blLabel(label) {
+            return api.branchLabel(label, 1);
+        },
+        bLabel(label) {
+            return api.branchLabel(label, 0);
         },
         /* ADDR16_HA / ADDR16_LO pair taking the address of an import. */
         addisImport(rt, symIndex) {
@@ -154,7 +169,7 @@ function assemble() {
                 if (target === undefined) throw new Error(`unresolved label ${p.label}`);
                 const site = (TEXT_ADDR + p.index * 4) >>> 0;
                 const disp = (target - site) >>> 0;
-                words[p.index] = ((18 << 26) | (disp & 0x03fffffc) | 1) >>> 0;
+                words[p.index] = ((18 << 26) | (disp & 0x03fffffc) | (p.lk ? 1 : 0)) >>> 0;
             }
             return { words, labels, relocs };
         },
@@ -216,6 +231,25 @@ function buildText() {
     a.lwz(3, 3, 0); /* .data[2] */
     a.blr();
 
+    /* Split target: the prologue makes this a discovered start, so the mid
+     * label has a range of its own. The mid body never touches the stack:
+     * a `b` does not create a frame, so it must run on the caller's. */
+    a.label("func_e");
+    a.stwu(1, 1, -16);
+    a.addi(3, 0, 0x40);
+    a.label("func_e_mid");
+    a.addi(3, 3, 2);
+    a.blr();
+
+    /* Tail entry: a `b` that crosses into func_e's body. Analysis must add
+     * func_e_mid as a tail start, otherwise the runtime dispatch has no
+     * registered body. The jump lands *after* `addi r3,0,0x40`, so entering
+     * at the mid label leaves r3 = 2 where entering at func_e leaves 0x42. */
+    a.label("func_t");
+    a.stwu(1, 1, -16).mflr().stw(0, 1, 20);
+    a.bLabel("func_e_mid");
+    a.lwz(0, 1, 20).mtlr().addi(1, 1, 16).blr();
+
     return a.finish();
 }
 
@@ -245,7 +279,13 @@ function build() {
         strict: labels.get("func_b"),
         fault: labels.get("func_c"),
         pointer: labels.get("func_d"),
+        split: labels.get("func_e"),
+        tail: labels.get("func_t"),
     };
+    const tailTarget = labels.get("func_e_mid");
+    if (tailTarget !== TAIL_TARGET) {
+        throw new Error(`fixture layout drifted: tail target is 0x${tailTarget.toString(16)}, expected 0x${TAIL_TARGET.toString(16)}`);
+    }
     for (const [name, addr] of Object.entries(ENTRY)) {
         if (entries[name] !== addr) {
             throw new Error(`fixture layout drifted: ${name} is 0x${entries[name].toString(16)}, expected 0x${addr.toString(16)}`);
@@ -292,6 +332,8 @@ function build() {
         { name: "OSBlockMove", value: SLOT_OSBLOCKMOVE, size: 8, info: 0x12, shndx: 2 },
         { name: "ProcUIInit", value: SLOT_PROCUIINIT, size: 8, info: 0x12, shndx: 3 },
         { name: "tls_value", value: BSS_ADDR, size: 4, info: 0x11, shndx: 6 },
+        { name: "func_e", value: entries.split, size: 0x10, info: 0x12, shndx: 1 },
+        { name: "func_t", value: entries.tail, size: 0x20, info: 0x12, shndx: 1 },
     ];
     for (const s of symbolDefs) {
         if (s.name !== "") addString(s.name);
@@ -441,8 +483,9 @@ function build() {
             rodata: { addr: RODATA_ADDR, size: RODATA_SIZE },
             data: { addr: DATA_ADDR, size: DATA_SIZE },
             bss: { addr: BSS_ADDR, size: BSS_SIZE },
-            functionStarts: [ENTRY.boot, ENTRY.helper, ENTRY.strict, ENTRY.fault],
+            functionStarts: [ENTRY.boot, ENTRY.helper, ENTRY.strict, ENTRY.fault, ENTRY.split, ENTRY.tail],
             pointerStarts: [ENTRY.pointer],
+            tailStarts: [TAIL_TARGET],
             segments: mapped.length,
             bytes,
             bssBytes,
@@ -469,4 +512,4 @@ function build() {
     };
 }
 
-module.exports = { build, ENTRY, TEXT_ADDR, SLOT_MEMCPY, SLOT_OSBLOCKMOVE, SLOT_PROCUIINIT };
+module.exports = { build, ENTRY, TAIL_TARGET, TEXT_ADDR, SLOT_MEMCPY, SLOT_OSBLOCKMOVE, SLOT_PROCUIINIT };

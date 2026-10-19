@@ -233,23 +233,27 @@ processes (read-only destination, unmapped destination, unmapped source,
 read-only `DCZeroRange` block) (`node tests/mem/run.js` → `mem: OK`; the
 job runs in CI).
 
-The synthetic boot harness (`tests/boot`) authors a game-free RPX (five
+The synthetic boot harness (`tests/boot`) authors a game-free RPX (seven
 functions, three imports, relocated `.rodata` pointers, two deferred TLS
 sites, `.data`/`.bss`), runs it through the real `analyze` →
 `translateModule` → `buildImage`/`serializeImage` path, compiles the
 generated unit with the real runtime, checked-memory model, image loader and
-HLE layer, and boots it headless in six scenarios: modeled calls through a
+HLE layer, and boots it headless in seven scenarios: modeled calls through a
 direct `bl` and through an address-taken import's dispatcher trampoline
 (`PPCX_HLE_TRACE`/`PPCX_DISPATCH_TRACE` transcripts), an unmodeled import
 tolerated as a counted no-op, `PPCX_HLE_STRICT=1` (exit 5 + register dump), a
-pointer-only getter reached from `.rodata`, an unmapped read (exit 9) and the
-same boot without `PPCX_IMAGE` (exit 9 at the first data read). Every
-stderr/stdout line and every guest-memory probe is compared with
-fixture-authored expectations, and the boot run must repeat byte-identically
-(`node tests/boot/run.js` → `boot: 6 scenarios … boot: OK`). The fixture
-found two defects now gated there: address-taken imports missing from
-`ppcx_import_name` and an initial SP that left the loader's ABI frame outside
-the stack region.
+pointer-only getter reached from `.rodata`, a cross-range tail `b` that runs
+the mid-body start the analysis fixpoint discovered (`PPCX_TAILCALL(c,
+f_000100F0)`, `r3 = 2` only if the jump skips `addi r3,0,0x40`), an unmapped
+read (exit 9) and the same boot without `PPCX_IMAGE` (exit 9 at the first
+data read). Every stderr/stdout line and every guest-memory probe is compared
+with fixture-authored expectations, and the boot run must repeat
+byte-identically (`node tests/boot/run.js` → `boot: 7 scenarios … boot: OK`).
+The fixture found two defects now gated there: address-taken imports missing
+from `ppcx_import_name` and an initial SP that left the loader's ABI frame
+outside the stack region; the tail scenario additionally gates the
+cross-range start fixpoint (pre-fixpoint analyzer → 14 failures, including
+the runtime exit 4 at `0x000100F0`).
 
 The native HLE contract test (`tests/hle/test_hle.c`, compiled with
 `cc -Wall -Wextra -Werror` in CI) covers the 13 modeled coreinit identity
