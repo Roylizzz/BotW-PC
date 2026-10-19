@@ -60,7 +60,11 @@ The pipeline runs against the real module (9,248,515 words of `.text`):
 * Boundary discovery finds 96,874 branch-derived starts (the local Ghidra
   census of the same module has 97,363) plus 104,026 pointer-only starts
   taken from `.rodata` code pointers (vtable/callback/constant-getter table
-  entries that no branch scan can reach).
+  entries that no branch scan can reach). Cross-checked against the census
+  on 2026-10-19: 96,052 branch starts agree, both difference classes are
+  classified and sampled, and the census turns out to be a lower bound
+  (Ghidra has multi-kilobyte gaps that the linear scan covers; see item 11
+  of `docs/research/2026-10-recompiler-prototype.md`).
 * The imports map covers 445 slots: 16,682 REL24 sites (16,522 `bl` calls
   and 160 `b` tail calls) and 40 ADDR16 address-taken sites.
 * `image` builds the load image of the same module in ~1.5 s: 31 segments,
