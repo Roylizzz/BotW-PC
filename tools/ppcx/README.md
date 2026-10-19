@@ -71,9 +71,9 @@ The pipeline runs against the real module (9,248,515 words of `.text`):
   `PPCX_HLE_TRACE=1` adds the per-call line
   (`ppcx: HLE unimplemented #1: proc_ui.ProcUIInit (import 359)
   [diagnostic no-op]`) and `PPCX_HLE_STRICT=1` stops on the first
-  unimplemented call with the register dump and exit code 5. Four coreinit
-  core-identity calls are modeled (`src/runtime/src/ppcx_hle.c`);
-  `proc_ui.ProcUIInit` is not one of them.
+  unimplemented call with the register dump and exit code 5. Thirteen
+  coreinit identity and memory/cache calls are modeled
+  (`src/runtime/src/ppcx_hle.c`); `proc_ui.ProcUIInit` is not one of them.
 
 Full notes, metrics and the remaining gaps towards a first GX2 frame are in
 `docs/research/2026-10-recompiler-prototype.md`.
@@ -179,17 +179,24 @@ process writes to the loaded read-only `.text` and must exit 9 with the
 permission diagnostic (`node tests/loader/run.js` → `loader: OK`).
 
 The checked-memory harness (`tests/mem`) compiles the real
-`src/runtime/src/ppcx_mem.c` with a generated driver and verifies the region
-model through the guest accessors: raw mode without a model, region
-registration, permissions and boundary/unaligned/host accesses, thirteen
-illegal accesses (nine outside every region and four writes to a read-only
-one) each failing in its own process with exit code 9 and an exact
-diagnostic, the fault hook and run-to-run determinism (`node
-tests/mem/run.js` → `mem: OK`).
+`src/runtime/src/ppcx_mem.c` together with `src/runtime/src/ppcx_hle.c` and
+a generated driver and verifies the region model through the guest
+accessors: raw mode without a model, region registration, permissions and
+boundary/unaligned/host accesses, thirteen illegal accesses (nine outside
+every region and four writes to a read-only one) each failing in its own
+process with exit code 9 and an exact diagnostic, the fault hook and
+run-to-run determinism. The HLE part checks the memory/cache models under
+the same map (25 positive lines: `OSBlockMove` non-overlapping and
+overlapping, `OSBlockSet`, `memcpy`, `memset`, block-granular
+`DCZeroRange`, cache/barrier no-ops, read-only source) and four HLE fault
+processes (read-only destination, unmapped destination, unmapped source,
+read-only `DCZeroRange` block) (`node tests/mem/run.js` → `mem: OK`; the
+job runs in CI).
 
 The native HLE contract test (`tests/hle/test_hle.c`, compiled with
-`cc -Wall -Wextra -Werror` in CI) covers the four modeled coreinit
-core-identity calls, exact-name matching and register preservation.
+`cc -Wall -Wextra -Werror` in CI) covers the 13 modeled coreinit identity
+and memory/cache calls, exact-name matching, register preservation and the
+`OSBlockMove` overlap guarantee on a raw arena.
 
 All tests use only synthetic instruction sequences, synthetic import tables
 and synthetic RPX fixtures; no game data is required.

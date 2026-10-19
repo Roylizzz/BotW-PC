@@ -27,6 +27,13 @@ APIs?
      `OSGetSystemTime` 353 / 483, `OSMemoryBarrier` 241 / 332,
      `memcpy` 230 / 410.
 
+   Follow-up (2026-10-19): the coreinit memory/cache primitives among these
+   callers now have typed HLE models (`OSBlockMove`, `OSBlockSet`, `memcpy`,
+   `memset`, `DCZeroRange`, the data-cache maintenance calls and
+   `OSMemoryBarrier`; see the
+   [runtime README](../../src/runtime/README.md)); `__tls_get_addr`,
+   `OSGetSystemTime` and the remaining services are still open.
+
 2. **Startup chain (v208), refined after the import-name fix.**
    Following entry `0x03C70404` (`FUN_03c70404`) and the recovered call
    sites:

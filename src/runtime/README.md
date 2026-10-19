@@ -20,8 +20,8 @@ It provides:
 * diagnostics with full register context for untranslated instructions and
   unregistered targets,
 * the HLE entry point for imported system functions, with exact-name coreinit
-  core identity models and explicit diagnostics for everything else. This is
-  not yet full Cafe OS or multi-core scheduling.
+  core identity and flat-memory/cache models and explicit diagnostics for
+  everything else. This is not yet full Cafe OS or multi-core scheduling.
 
 ## Build (local prototype)
 
@@ -57,7 +57,7 @@ prototype.
   entry point runs (fatal — exit code 8 with a diagnostic on stderr — if the
   blob is invalid),
 * `PPCX_HLE_TRACE=1` – log every emulated system call,
-* `PPCX_HLE_STRICT=1` – abort on the first **unimplemented** system call; implemented core identity calls remain available.
+* `PPCX_HLE_STRICT=1` – abort on the first **unimplemented** system call; implemented models remain available.
 
 ## Checked guest memory (exit code 9)
 
@@ -125,9 +125,42 @@ built.
 
 ## Implemented HLE subset (synthetic tests)
 
-Four original, exact-name `coreinit` functions are implemented in `ppcx_hle.c`: `OSGetCoreCount` (3), `OSGetCoreId` (1), `OSGetMainCoreId` (1), `OSIsMainCore` (true). The runtime's only guest CPU is assigned to retail Wii U main core 1 **by explicit prototype convention**. This is not actual threading, affinity or scheduling. Return values use r3 (PowerPC ABI). The implementation intentionally changes no other guest registers or memory. It matches the documented interfaces in [devkitPro/wut coreinit/core.h](https://github.com/devkitPro/wut/blob/master/include/coreinit/core.h).
+Thirteen original, exact-name `coreinit` functions are implemented in
+`ppcx_hle.c`:
 
-All other imports remain unimplemented, including `proc_ui.ProcUIInit`. In diagnostic mode they are counted but still return as no-ops (not a valid game execution path). Set `PPCX_HLE_STRICT=1` to stop on such calls. Exact module-qualified lookup means similarly named symbols in other modules cannot accidentally be considered implemented.
+* **Core identity:** `OSGetCoreCount` (3), `OSGetCoreId` (1),
+  `OSGetMainCoreId` (1), `OSIsMainCore` (true). The runtime's only guest CPU
+  is assigned to retail Wii U main core 1 **by explicit prototype
+  convention**. This is not actual threading, affinity or scheduling.
+* **Memory and cache:** `OSBlockMove` (memmove-like, overlap supported,
+  returns `dst`; its `flush` argument is a no-op because the flat arena has
+  no data cache), `OSBlockSet` (fill, `uint8_t` value, returns `dst`),
+  `coreinit.memcpy` and `coreinit.memset` (returns `dst`), `DCZeroRange`
+  (zeroes the 0x20-byte cache blocks that cover the range, through
+  `ppcx_dcbz`), `DCFlushRange` / `DCFlushRangeNoSync` / `DCInvalidateRange`
+  (typed no-ops on the coherent arena that still validate their range;
+  `DCFlushRange` runs a host fence) and `OSMemoryBarrier` (host fence).
+
+All return values use r3 (PowerPC ABI). The memory services validate the
+whole range against the checked region map before touching memory, so a
+rejected operation has no partial effects and stops with the deterministic
+diagnostic and exit code 9. Zero-length ranges are no-ops and are never
+dereferenced. `OSBlockMove`'s documented overlap guarantee is implemented
+explicitly because the local TCC's `memmove` was measured to copy forward and
+corrupt an overlapping destination. Signatures and return contracts were
+checked against devkitPro/wut `coreinit/core.h`, `memory.h` and `cache.h`.
+
+The v208 import census gives the measured priority: `OSBlockMove` 6,834
+REL24 call sites (+2 address-taken), `coreinit.memcpy` 408 (+2),
+`OSMemoryBarrier` 330 (+2), `OSBlockSet` 295 (+2), `DCZeroRange` 119,
+`DCFlushRange` 77, `DCFlushRangeNoSync` 29, `DCInvalidateRange` 9 and
+`coreinit.memset` 84.
+
+All other imports remain unimplemented, including `proc_ui.ProcUIInit`. In
+diagnostic mode they are counted but still return as no-ops (not a valid game
+execution path). Set `PPCX_HLE_STRICT=1` to stop on such calls. Exact
+module-qualified lookup means similarly named symbols in other modules cannot
+accidentally be considered implemented.
 
 Run the synthetic native tests without game content:
 
@@ -136,4 +169,12 @@ cc -std=c11 -Wall -Wextra -Werror -I src/runtime/include src/runtime/src/ppcx_hl
 ./hle_check
 ```
 
-The workflow runs these checks on every pull request. Do not count modeled core identity calls as evidence of full Cafe OS compatibility.
+The contract test runs on a raw host arena (`ppcx_mem_active` is 0, with a
+stubbed checker). The compiled `tests/mem` harness links the same
+`ppcx_hle.c` with the real `ppcx_mem.c` and region map: it checks the copy,
+fill and block semantics and runs four extra child processes in which a
+read-only destination, an unmapped destination, an unmapped source and a
+read-only `DCZeroRange` block must each exit with code 9 and the exact
+diagnostic. The workflow runs both the contract test and `tests/mem` on every
+pull request. Do not count modeled identity or memory/cache calls as evidence
+of full Cafe OS compatibility.
