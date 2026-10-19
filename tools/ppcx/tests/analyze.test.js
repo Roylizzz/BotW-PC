@@ -87,3 +87,89 @@ test("accepts a custom text section name", () => {
     assert.equal(b.section, ".text");
     assert.throws(() => analyzeRpx(buf, parsed, { textSection: ".missing" }), /not found/);
 });
+
+function buildPointerFixture() {
+    const { buf, parsed } = buildFixture();
+    // Layout after .text (ends at 0x1048): .rodata (8), .rela.rodata (12),
+    // .data (8), .rela.data (two 12-byte relocation records).
+    const RODATA_OFF = 0x1048;
+    const RELA_RODATA_OFF = 0x1050;
+    const DATA_OFF = 0x105c;
+    const RELA_DATA_OFF = 0x1064;
+    const RELA_DATA_SIZE = 24;
+    const big = Buffer.alloc(RELA_DATA_OFF + RELA_DATA_SIZE);
+    buf.copy(big, 0);
+    // .rodata holds one code pointer (0x1010, not a branch-derived start).
+    big.writeUInt32BE(0x1010, RODATA_OFF);
+    big.writeUInt32BE(0x5000, RELA_RODATA_OFF); // r_offset
+    big.writeUInt32BE(1, RELA_RODATA_OFF + 4); // r_info: R_PPC_ADDR32
+    big.writeUInt32BE(0x1010, RELA_RODATA_OFF + 8); // r_addend
+    // .data holds an ADDR32 pointer (0x2004) plus a non-ADDR32 word whose
+    // raw value also looks like a pointer and must be ignored.
+    big.writeUInt32BE(0x2004, DATA_OFF);
+    big.writeUInt32BE(0x1014, DATA_OFF + 4);
+    big.writeUInt32BE(0x6000, RELA_DATA_OFF); // r_offset
+    big.writeUInt32BE(1, RELA_DATA_OFF + 4); // r_info: R_PPC_ADDR32
+    big.writeUInt32BE(0x2004, RELA_DATA_OFF + 8); // r_addend
+    big.writeUInt32BE(0x6004, RELA_DATA_OFF + 12); // r_offset
+    big.writeUInt32BE(2, RELA_DATA_OFF + 16); // r_info: R_PPC_ADDR16_HA, ignored
+    big.writeUInt32BE(0x1014, RELA_DATA_OFF + 20); // r_addend
+    parsed.sections.push(
+        {
+            index: 2,
+            name: ".rodata",
+            type: 1,
+            flags: 0x2,
+            addr: 0x5000,
+            offset: RODATA_OFF,
+            size: 8,
+            logicalSize: 8,
+            entsize: 0,
+        },
+        {
+            index: 3,
+            name: ".rela.rodata",
+            type: 4,
+            flags: 0,
+            addr: 0,
+            offset: RELA_RODATA_OFF,
+            size: 12,
+            logicalSize: 12,
+            entsize: 12,
+        },
+        {
+            index: 4,
+            name: ".data",
+            type: 1,
+            flags: 0x3,
+            addr: 0x6000,
+            offset: DATA_OFF,
+            size: 8,
+            logicalSize: 8,
+            entsize: 0,
+        },
+        {
+            index: 5,
+            name: ".rela.data",
+            type: 4,
+            flags: 0,
+            addr: 0,
+            offset: RELA_DATA_OFF,
+            size: RELA_DATA_SIZE,
+            logicalSize: RELA_DATA_SIZE,
+            entsize: 12,
+        },
+    );
+    return { buf: big, parsed };
+}
+
+test("collects code pointers from .rela.rodata and .rela.data only when ADDR32", () => {
+    const { buf, parsed } = buildPointerFixture();
+    const a = analyzeRpx(buf, parsed);
+    assert.deepEqual(a.pointerStarts, [0x1010, 0x2004]);
+    assert.equal(a.stats.pointerStartsTotal, 2);
+    assert.equal(a.stats.pointerStartsExtra, 2);
+    // The non-ADDR32 .data word is not promoted, and branch starts are
+    // unchanged by the pointer scan.
+    assert.deepEqual(a.functionStarts, [0x1000, 0x100c, 0x2000]);
+});

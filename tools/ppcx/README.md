@@ -58,9 +58,10 @@ The pipeline runs against the real module (9,248,515 words of `.text`):
   `psq_l`/`psq_st`, the indexed forms and the external decode cross-check
   below (post-audit snapshot: 97.71% / 2.29% / 0.00%).
 * Boundary discovery finds 96,874 branch-derived starts (the local Ghidra
-  census of the same module has 97,363) plus 104,026 pointer-only starts
-  taken from `.rodata` code pointers (vtable/callback/constant-getter table
-  entries that no branch scan can reach). Cross-checked against the census
+  census of the same module has 97,363) plus 104,499 pointer-only starts
+  taken from `.rodata`/`.data` code pointers (vtable/callback/constant-getter
+  and static-init table entries that no branch scan can reach; the `.data`
+  half landed 2026-10-19, +473 starts). Cross-checked against the census
   on 2026-10-19: 96,052 branch starts agree, both difference classes are
   classified and sampled, and the census turns out to be a lower bound
   (Ghidra has multi-kilobyte gaps that the linear scan covers; see item 11

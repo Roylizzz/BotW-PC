@@ -114,7 +114,7 @@ function loadRpx(file) {
     return loadRpxFrom(fs.readFileSync(file), file);
 }
 
-const ANALYSIS_VERSION = 6; // bump when decode/analysis semantics change
+const ANALYSIS_VERSION = 7; // bump when decode/analysis semantics change
 
 function computeAnalysis(rpx) {
     const a = analyzeRpx(rpx.buf, rpx.parsed);
@@ -163,7 +163,7 @@ function cmdAnalyze(args) {
     console.log(`functions: ${analysis.functionCount} starts${cached ? " (cached)" : ""}`);
     const ptrTotal = analysis.stats.pointerStartsTotal ?? 0;
     const ptrExtra = analysis.stats.pointerStartsExtra ?? 0;
-    console.log(`pointers:  ${ptrTotal} .rodata code pointers, ${ptrExtra} extra function starts`);
+    console.log(`pointers:  ${ptrTotal} .rodata/.data code pointers, ${ptrExtra} extra function starts`);
     const cov = analysis.coverage;
     const total = cov.supported + cov.unsupported + cov.unknown;
     console.log(`coverage:  supported ${cov.supported} (${pct(cov.supported, total)}), ` +

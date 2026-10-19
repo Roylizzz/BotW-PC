@@ -70,10 +70,11 @@ APIs?
 
 4. **Read-only data pointers are relocation-backed and already final.**
    `.rela.rodata` holds 272,819 entries and `.rela.data` 5,936. Pointers
-   in `.rodata` are `R_PPC_ADDR32` (type 1) against `$TEXT`; the addend
-   plus the `$TEXT` base equals the value stored in the file (e.g.
-   addend `0xC48A40` → stored word `0x02C48A40`), so vtable-style tables
-   can be read directly from the bytes.
+   in `.rodata` and `.data` are `R_PPC_ADDR32` (type 1) against `$TEXT`;
+   the addend plus the `$TEXT` base equals the value stored in the file
+   (e.g. addend `0xC48A40` → stored word `0x02C48A40`), so vtable-style
+   tables can be read directly from the bytes. The analyzer's pointer scan
+   reads both relocation sections (`.rela.data` added 2026-10-19).
 
 5. **Framework vtable cluster located in `.rodata`.** Around
    `0x101C5F30` sits a run of 4-byte function pointers that starts with a
