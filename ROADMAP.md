@@ -71,10 +71,10 @@ Deliverable: `docs/architecture/` decision record.
 
 - [x] Resolve source-level PowerPC semantic defects PPC-001..PPC-013, each with a failing synthetic regression first (compiled differential harness + 10/10 mutation check; see the audit).
 - [x] Compile and execute generated C against a separate reference oracle for the integer core and the quantized paired-single load/store path (221 programs × full register/flag/FPR/GQR/memory comparison); FP arithmetic and branch/system coverage remain open.
-- [ ] Implement authenticated RPX section/data image, relocation handling, memory checks and typed, non-silent Cafe OS HLE.
+- [ ] Implement authenticated RPX section/data image, relocation handling, memory checks and typed, non-silent Cafe OS HLE. *(Started 2026-10-19: `tools/ppcx image` validates and serializes every allocated section, `.bss` zero-fill and data relocations — 31 segments, 43,155,811 bytes, 278,749 `R_PPC_ADDR32` applied, 6 TLS sites deferred with their addresses — and the runtime maps it with bounds/order/checksum checks before writing anything (`src/runtime/src/ppcx_image.c`, compiled harness in `tests/loader`). Checked pointer semantics and the typed HLE registry remain open.)*
 - [ ] Establish deterministic headless boot checkpoints, content-addressed analysis caches and scalable generated-C shards.
 - [x] Configure PR CI on synthetic sources only (`node-tools`, C syntax — no game input); game-derived verification stays a local, user-run step.
-- [ ] Extend PR CI to the compiled ISA harness (runs locally today: `node tests/isa/run.js`).
+- [ ] Extend PR CI to the compiled ISA harness (runs locally today: `node tests/isa/run.js` and `node tests/loader/run.js`).
 
 See the [audit](docs/audits/2026-10-18-code-audit.md), [implementation plan](docs/architecture/implementation-plan.md), and [comparative research](docs/research/2026-10-native-port-patterns.md).
 

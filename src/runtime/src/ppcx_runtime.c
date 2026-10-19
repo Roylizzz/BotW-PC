@@ -30,13 +30,14 @@
 #include <string.h>
 
 #include "ppcx_abi.h"
+#include "ppcx_image.h"
 #include "ppcx_runtime.h"
 
 /*
  * The RPX is linked for addresses up to ~0xC1xxxxxx (the import slots sit
- * at 0xC0000000), so one arena covers the whole guest address space.
+ * at 0xC0000000), so one arena covers the whole guest address space
+ * (PPCX_ARENA_BYTES, shared with the image loader in ppcx_abi.h).
  */
-#define PPCX_ARENA_BYTES 0xC2000000u
 
 /*
  * Address-taken imports get pseudo-addresses in a region no RPX section
@@ -245,8 +246,28 @@ unsigned ppcx_hle_call_count(void) {
 
 int ppcx_run(void) {
     Cpu cpu;
+    const char *image;
     ppcx_runtime_init();
     memset(&cpu, 0, sizeof(cpu));
+    /*
+     * Optional RPX load image (build/ppcx/image.bin, written by
+     * `tools/ppcx image`): maps .rodata/.data/.bss so translated code can
+     * read the game's own globals. Without PPCX_IMAGE the arena stays
+     * empty, which is only enough for functions that touch no data.
+     */
+    image = getenv("PPCX_IMAGE");
+    if (image != NULL && image[0] != '\0') {
+        PpcxImageReport report;
+        char err[256];
+        long rc = ppcx_image_load_file(image, &report, err, sizeof err);
+        if (rc != 0) {
+            fprintf(stderr, "ppcx: image load failed (%ld): %s\n", rc, err);
+            return 8;
+        }
+        fprintf(stderr, "ppcx: image %s mapped: %u segment(s), %llu bytes (%u BSS)\n",
+                image, (unsigned)report.segments,
+                (unsigned long long)report.bytes, (unsigned)report.bss_segments);
+    }
     /* Modelled boot state: the system software leaves the quantized
      * load/store unit enabled (the shipped game code never writes HID2 and
      * still executes psq_* instructions, so LSQE must already be set). */

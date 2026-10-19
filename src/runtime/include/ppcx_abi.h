@@ -45,6 +45,14 @@ typedef int64_t s64;
 #define PPCX_GUEST_BASE 0x200000000000ull
 #endif
 
+/*
+ * Size of the flat guest arena the runtime allocates for guest memory. The
+ * RPX modules this prototype supports link all their sections below
+ * 0xC2000000 (the import slot tables sit at 0xC0000000), which keeps the
+ * whole image inside one host allocation.
+ */
+#define PPCX_ARENA_BYTES 0xC2000000u
+
 #ifdef __cplusplus
 extern "C" {
 #endif

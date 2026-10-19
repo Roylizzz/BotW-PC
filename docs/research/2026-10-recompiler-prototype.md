@@ -124,12 +124,21 @@ first GX2 frame?
    forms, clamping, truncation and FTZ corners). See
    [the audit](../audits/2026-10-18-code-audit.md).
 
+   The compiled loader harness (`tests/loader`) covers the load image the
+   same way: a synthetic RPX with relocated `.rodata`/`.data`, zero-filled
+   `.bss`, ten corrupted-blob classes (bad magic/count/table size, empty
+   segment, unknown flags, arena escape, overlap, payload escape, checksum)
+   and Fletcher-32 boundary probes; `node tests/loader/run.js` →
+   `loader: 50 state lines, 10 negative blobs … loader: OK`.
+
 ## Evidence quality
 
 - **Observed:** all metrics above, produced by our tools on our own copy
   (coverage re-measured 2026-10-19 after the paired-single implementation;
-  the 2026-10-18 audit checkpoint read 97.71%); the Ghidra census is a
-  local comparison artifact only.
+  the 2026-10-18 audit checkpoint read 97.71%); the loader-image metrics
+  (31 segments, 43,155,811 bytes, 278,749 applied relocations, 6 deferred
+  TLS sites) come from an `image` run pinned to the recorded v208 SHA-256;
+  the Ghidra census is a local comparison artifact only.
 - **Derived:** the interpretation of `.rodata` ADDR32 entries as code
   pointers (validated by sampling), and the tail-call reading of
   `b`-to-import sites (decided by the relocation, not by the stored field).
@@ -139,9 +148,16 @@ first GX2 frame?
 
 ## Open questions / next steps towards a first GX2 frame
 
-- **Data image:** load `.rodata`/`.data`/`.bss` into the arena and apply
-  data relocations (table slots holding imports need `PPCX_IMPORT_ADDR`).
-  Nothing that walks a table can run before this exists.
+- **Data image:** implemented 2026-10-19 — `tools/ppcx image` validates and
+  serializes every allocated section of the module (31 sections,
+  43,155,811 bytes including the 1,399,469-byte `.bss`), applies the 278,749
+  `R_PPC_ADDR32` data relocations, leaves the 889,935 executable-section
+  relocations to the recompiler and defers the 6 TLS sites explicitly; the
+  runtime maps the blob with bounds/order/checksum checks
+  (`src/runtime/src/ppcx_image.c`). Data slots that point into import slots
+  are not observed in v208 and stay unmodelled. What remains for this item
+  is the *code* that walks the loaded tables (HLE tier 1 below), not the
+  image itself.
 - **HLE tier 1:** coreinit (`OSGetCoreId`, `OSMemoryBarrier`,
   `OSGetSystemTime`, `OSBlockMove/Set`, `memcpy`, `_iob`,
   `__gh_FOPEN_MAX`), then proc_ui/padscore stubs.
