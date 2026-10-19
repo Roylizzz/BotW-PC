@@ -50,6 +50,10 @@ jobs:
         env:
           PPCX_CC: cc
         run: node tests/mem/run.js
+      - name: Verify deterministic end-to-end synthetic RPX headless boot checkpoints
+        env:
+          PPCX_CC: cc
+        run: node tests/boot/run.js
 
   coreinit-hle:
     name: Synthetic Cafe OS HLE tests

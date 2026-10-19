@@ -79,8 +79,9 @@ node tests/boot/run.js                 # CLI, exits non-zero on mismatch
 node --test "tests/boot/*.test.js"     # node:test wrapper (skips without a compiler)
 ```
 
-The harness is not wired into the CI workflow yet (that file is
-maintainer-side); the other compiled harnesses run in `compiled-conformance`.
+The synthetic boot harness runs in the `compiled-conformance` GitHub Actions
+job with `PPCX_CC=cc`. CI rejects mismatched checkpoints and a nonzero exit;
+no Nintendo data is used or uploaded.
 
 See `docs/research/2026-10-recompiler-prototype.md` for the findings and
 `src/runtime/README.md` for the stack frame and HLE details.
