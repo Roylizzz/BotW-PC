@@ -37,21 +37,34 @@ node tools/ppcx/ppcx.js image     --rpx /path/to/U-King-v208.rpx --out build/ppc
 `translate` caches the whole-function census next to its output
 (`build/ppcx/analysis.json`) so repeated translations are fast, and writes a
 report with every warning, unsupported instruction and dispatch target it
-left behind (`build/ppcx/translate-report.json`).
+left behind (`build/ppcx/translate-report.json`). The report lists every
+import the unit depends on, split into `calls` (REL24 sites) and
+`addressTaken` (ADDR16 sites); both kinds are resolved through the generated
+`ppcx_import_name`, because an address-taken import is called at run time
+through the dispatcher trampoline. The same pipeline is available as a small
+Node API (`loadRpx`/`loadRpxFrom`, `computeAnalysis`, `buildRangeMap`,
+`scanCallees`, `translateModule`), which `tests/boot` uses to emit one unit
+per boot scenario; `translateModule` accepts several roots plus an explicit
+`ppcx_entry` and otherwise behaves exactly like the CLI (verified
+byte-identical output on the v208 demo).
 
 ## Prototype status (October 2026)
 
 The pipeline runs against the real module (9,248,515 words of `.text`):
 
-* `analyze` finishes in ~2.3 s: 99.9993% of words decode to supported
-  instructions (9,248,451 of 9,248,515), none are known-but-unsupported and
-  64 words are unknown/data — re-measured on 2026-10-19 after implementing
-  `psq_l`/`psq_st` and the indexed forms (post-audit snapshot: 97.71% /
-  2.29% / 0.00%).
+* `analyze` finishes in ~2.3 s: 99.9994% of words decode to supported
+  instructions (9,248,462 of 9,248,515), none are known-but-unsupported and
+  53 words are unknown/data — re-measured on 2026-10-19 after implementing
+  `psq_l`/`psq_st`, the indexed forms and the external decode cross-check
+  below (post-audit snapshot: 97.71% / 2.29% / 0.00%).
 * Boundary discovery finds 96,874 branch-derived starts (the local Ghidra
   census of the same module has 97,363) plus 104,026 pointer-only starts
   taken from `.rodata` code pointers (vtable/callback/constant-getter table
-  entries that no branch scan can reach).
+  entries that no branch scan can reach). Cross-checked against the census
+  on 2026-10-19: 96,052 branch starts agree, both difference classes are
+  classified and sampled, and the census turns out to be a lower bound
+  (Ghidra has multi-kilobyte gaps that the linear scan covers; see item 11
+  of `docs/research/2026-10-recompiler-prototype.md`).
 * The imports map covers 445 slots: 16,682 REL24 sites (16,522 `bl` calls
   and 160 `b` tail calls) and 40 ADDR16 address-taken sites.
 * `image` builds the load image of the same module in ~1.5 s: 31 segments,
@@ -77,6 +90,29 @@ The pipeline runs against the real module (9,248,515 words of `.text`):
 
 Full notes, metrics and the remaining gaps towards a first GX2 frame are in
 `docs/research/2026-10-recompiler-prototype.md`.
+
+## Independent decode cross-check
+
+`xcheck` compares the decoder against an external disassembler, word by word:
+
+```sh
+node tools/ppcx/xcheck.js --text build/xcheck/text.bin --dumps build/xcheck
+```
+
+The dump is produced out of band with rizin (through REA on Windows, where the
+Ghidra lane rejects PowerPC RPX) using `asm.arch=ppc`, `asm.bits=32`,
+`asm.cpu=ps`, `cfg.bigendian=true` and `io.va=false`; the exact commands are in
+the header of `xcheck.js` and the workflow is documented in
+`docs/reverse-engineering/rea-guidance.md`. The tool buckets every difference
+(identical mnemonic, documented assembler alias, paired-single/AltiVec
+overlap, record-suffix mismatch, real mismatch, undecodable word, missing
+line) and exits non-zero on a real disagreement.
+
+Measured on v208 (2026-10-19, all 9,248,515 words of the decompressed
+`.text`): 5,843,694 identical mnemonics (63.1852%), 3,404,768 assembler
+aliases (36.8142%), **0 real disagreements**, and the same 53 data/illegal
+words rejected by both. The check found the `lhzux`/`lhaux` encoding defect
+fixed above; the dump is game-derived and stays under `build/`.
 
 ## Load image (sections, `.bss` and data relocations)
 
@@ -159,7 +195,7 @@ deferred (see *Load image*).
 ```sh
 cd tools/ppcx && npm test                                       # 97 decoder/translator/image cases
 # from the repository root: compiled harnesses (need a C compiler)
-node --test "tests/isa/*.test.js" "tests/loader/*.test.js" "tests/mem/*.test.js" "tools/ppcx/tests/*.test.js"
+node --test "tests/isa/*.test.js" "tests/loader/*.test.js" "tests/mem/*.test.js" "tests/boot/*.test.js" "tools/ppcx/tests/*.test.js"
 ```
 
 The harness (`tests/isa`) translates 221 synthetic guest programs, compiles
@@ -192,6 +228,24 @@ overlapping, `OSBlockSet`, `memcpy`, `memset`, block-granular
 processes (read-only destination, unmapped destination, unmapped source,
 read-only `DCZeroRange` block) (`node tests/mem/run.js` → `mem: OK`; the
 job runs in CI).
+
+The synthetic boot harness (`tests/boot`) authors a game-free RPX (five
+functions, three imports, relocated `.rodata` pointers, two deferred TLS
+sites, `.data`/`.bss`), runs it through the real `analyze` →
+`translateModule` → `buildImage`/`serializeImage` path, compiles the
+generated unit with the real runtime, checked-memory model, image loader and
+HLE layer, and boots it headless in six scenarios: modeled calls through a
+direct `bl` and through an address-taken import's dispatcher trampoline
+(`PPCX_HLE_TRACE`/`PPCX_DISPATCH_TRACE` transcripts), an unmodeled import
+tolerated as a counted no-op, `PPCX_HLE_STRICT=1` (exit 5 + register dump), a
+pointer-only getter reached from `.rodata`, an unmapped read (exit 9) and the
+same boot without `PPCX_IMAGE` (exit 9 at the first data read). Every
+stderr/stdout line and every guest-memory probe is compared with
+fixture-authored expectations, and the boot run must repeat byte-identically
+(`node tests/boot/run.js` → `boot: 6 scenarios … boot: OK`). The fixture
+found two defects now gated there: address-taken imports missing from
+`ppcx_import_name` and an initial SP that left the loader's ABI frame outside
+the stack region.
 
 The native HLE contract test (`tests/hle/test_hle.c`, compiled with
 `cc -Wall -Wextra -Werror` in CI) covers the 13 modeled coreinit identity

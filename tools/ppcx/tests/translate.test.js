@@ -91,6 +91,9 @@ test("substitutes address-taken imports (HA/LO pair)", () => {
     const r = translate([0x3c600000, 0x38630000, 0x4e800020], { base: 0x2000, dataSite });
     assert.match(r.code, /c->gpr\[3\] = \(PPCX_IMPORT_ADDR\(3\) \+ 0x8000u\) & 0xffff0000u;/);
     assert.match(r.code, /c->gpr\[3\] = c->gpr\[3\] \+ \(u32\)\(s32\)\(PPCX_IMPORT_ADDR\(3\) & 0xffffu\);/);
+    /* The HA/LO pair is one runtime dependency, not two. */
+    assert.deepEqual(r.importAddrs, [3]);
+    assert.deepEqual(r.hleCalls, []);
 });
 
 test("translates psq loads and stores with the displacement EA", () => {

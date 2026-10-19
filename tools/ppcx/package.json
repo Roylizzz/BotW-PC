@@ -8,6 +8,6 @@
     "ppcx": "./ppcx.js"
   },
   "scripts": {
-    "test": "node --test tests/decode.test.js tests/translate.test.js tests/analyze.test.js tests/imports.test.js tests/image.test.js"
+    "test": "node --test tests/decode.test.js tests/translate.test.js tests/analyze.test.js tests/imports.test.js tests/image.test.js tests/xcheck.test.js"
   }
 }

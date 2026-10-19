@@ -13,9 +13,12 @@ of the Wild* — with the long-term goal of running it natively on PC.
 > zero-fill and 278,749 data relocations) with a runtime loader that
 > validates bounds, ordering and a payload checksum before mapping, a
 > checked guest-memory model (stack + loaded segments; anything else faults
-> deterministically with exit code 9 instead of reading unrelated bytes)
-> and a minimal exact-name HLE registry for 13 coreinit identity and
-> flat-memory/cache calls with strict unknown-call handling. See [ROADMAP.md](ROADMAP.md).
+> deterministically with exit code 9 instead of reading unrelated bytes),
+> a minimal exact-name HLE registry for 13 coreinit identity and
+> flat-memory/cache calls with strict unknown-call handling, and a
+> synthetic headless boot fixture (`tests/boot`) that runs a game-free RPX
+> through the whole pipeline with stable trace and memory checkpoints. See
+> [ROADMAP.md](ROADMAP.md).
 
 ## What this project is
 
@@ -68,7 +71,7 @@ Read the full policy: [DISCLAIMER.md](DISCLAIMER.md) and
 - [Stabilization/implementation plan](docs/architecture/implementation-plan.md)
 - [REA and direct Ghidra guidance](docs/reverse-engineering/rea-guidance.md)
 
-The corrected decoder covers **99.9993%** of the module's words (9,248,451 of 9,248,515; no known-unsupported instructions, 64 unknown/data words), the audit defects are mutation-verified and the quantized paired-single loads/stores are differentially tested — coverage is still **not** behavioral correctness or game compatibility. The prototype does not boot a playable game; the section/data image now loads and maps under bounds/order/checksum checks and guest accesses outside the mapped regions (stack + loaded segments) fault deterministically, while loaded segments also carry their ELF write permission so writes to `.text` or the import tables stop with exit code 9; the rest of Cafe OS (only 13 coreinit identity and memory/cache calls are modeled) and GPU presentation are unfinished (Phase 2B/2C of the implementation plan).
+The corrected decoder covers **99.9994%** of the module's words (9,248,462 of 9,248,515; no known-unsupported instructions, 53 unknown/data words), the audit defects are mutation-verified, the quantized paired-single loads/stores are differentially tested and an independent rizin disassembly of all 9,248,515 words agrees mnemonic by mnemonic with the decoder (zero real disagreements, 53 data/illegal words rejected by both) — coverage is still **not** behavioral correctness or game compatibility. The prototype does not boot a playable game; the section/data image now loads and maps under bounds/order/checksum checks and guest accesses outside the mapped regions (stack + loaded segments) fault deterministically, while loaded segments also carry their ELF write permission so writes to `.text` or the import tables stop with exit code 9; a game-free RPX boots end to end through the real pipeline with stable trace and memory checkpoints (`tests/boot`); the rest of Cafe OS (only 13 coreinit identity and memory/cache calls are modeled) and GPU presentation are unfinished (Phase 2B/2C of the implementation plan).
 
 ## Legal
 
