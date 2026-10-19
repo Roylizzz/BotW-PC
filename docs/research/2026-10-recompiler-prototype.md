@@ -31,20 +31,20 @@ first GX2 frame?
      97,363 (96,946 in `.text` plus 417 named import stubs at `0xC000xxxx`);
      the measured overlap is 96,052 starts (99.15%) and the differences are
      classified in item 11.
-   - Pointer-derived: `ADDR32` relocations in `.rela.rodata` patch 138,263
-     u32 values so they point into `.text`; **104,026 of those targets are
-     additional function starts** no branch scan can see (vtables, callback
-     tables, clusters of tiny constant getters). Sampled targets are
-     4-aligned, follow a control-flow boundary (almost always `blr`) and
-     disassemble as coherent functions (`li r3,N; blr` clusters, `li r3,13;
-     b <merge>` fragments); 91,578 of the 104,026 follow a `blr` and all
-     but 2 a terminal transfer. Splitting ranges at such targets is
-     harmless in this execution model because every register lives in one
-     shared `Cpu`. The Ghidra census contains only 115 of these targets
-     (it does not model relocation-derived entries) and `.rela.data` holds
-     1,008 further distinct in-`.text` `ADDR32` targets the scan does not
-     read yet — recorded follow-ups in item 11.
-   - Translation ranges use the union of both sets: **200,900 starts**.
+   - Pointer-derived: `ADDR32` relocations in `.rela.rodata` and
+     `.rela.data` patch 139,005 u32 values so they point into `.text`;
+     **104,499 of those targets are additional function starts** no branch
+     scan can see (vtables, callback tables, static-init tables in `.data`,
+     clusters of tiny constant getters). Sampled targets are 4-aligned,
+     follow a control-flow boundary (almost always `blr`) and disassemble
+     as coherent functions (`li r3,N; blr` clusters, `li r3,13; b <merge>`
+     fragments); 91,976 of the 104,499 follow a `blr` and all but 2 a
+     terminal transfer. Splitting ranges at such targets is harmless in
+     this execution model because every register lives in one shared
+     `Cpu`. The Ghidra census contains only 115 of these targets (it does
+     not model relocation-derived entries); the 473 starts added by the
+     `.data` scan (2026-10-19) are absent from it entirely.
+   - Translation ranges use the union of both sets: **201,373 starts**.
 
 3. **Instruction coverage** (9,248,515 words): **99.9994% supported**
    (9,248,462), no known-unsupported instructions, 0.0006% unknown/data
@@ -213,13 +213,13 @@ first GX2 frame?
     part of CI because it needs an external disassembler.
 
 11. **Function-start cross-check against the local Ghidra census
-    (2026-10-19).** The branch-derived starts (96,874) and the `.rodata`
-    pointer starts (104,026 extra; 200,900 translation ranges) were
-    compared with the Ghidra 12.1 headless census of the same module
+    (2026-10-19).** The branch-derived starts (96,874) and the pointer
+    starts (104,499 extra; 201,373 translation ranges) were compared with
+    the Ghidra 12.1 headless census of the same module
     (97,363 functions: 96,946 in `.text` plus 417 named import stubs at
     `0xC000xxxx`). **96,052 branch starts agree (99.15%)**, and the
     pointer class is almost entirely absent from the census (115 of
-    104,026). The 779 Ghidra-only in-`.text` entries split into 362
+    104,499). The 779 Ghidra-only in-`.text` entries split into 362
     targets of tail `b` branches (473 sites, no `bl` site — our discovery
     deliberately skips tail targets unless they look like a prologue after
     a boundary) and 417 others: tiny leaves after boundaries that no
@@ -235,15 +235,16 @@ first GX2 frame?
     between `0x04232C18` and `0x042335F4`), so the census is a lower
     bound, not a completeness reference. The pointer-only targets are
     tiny constant getters (`li r3,N; blr`), no-op stubs and trampolines
-    (`addi r3,r3,-N; b`): 91,578 of 104,026 follow a `blr` and all but 2
-    follow a terminal transfer. Two follow-ups are recorded: the 362
-    tail-only entries are control-flow targets our start set lacks (a `b`
-    to them becomes a dispatch to an unregistered address at run time;
-    the naive “tail target after a terminal instruction” rule matches
-    17,414 candidates, ~48x the needed set, so the fix needs a better
-    criterion or interior-entry support), and `.rela.data` carries 1,008
-    further distinct in-`.text` `ADDR32` targets that the pointer scan
-    does not read yet (it reads `.rodata` only). The comparison used the
+    (`addi r3,r3,-N; b`): 91,976 of 104,499 follow a `blr` and all but 2
+    follow a terminal transfer. Follow-ups: the 362 tail-only entries are
+    control-flow targets our start set lacks (a `b` to them becomes a
+    dispatch to an unregistered address at run time; the naive “tail
+    target after a terminal instruction” rule matches 17,414 candidates,
+    ~48x the needed set, so the fix needs a better criterion or
+    interior-entry support). The `.rela.data` gap was closed on
+    2026-10-19: the pointer scan now reads `.rela.data` as well (+473
+    extra starts, +742 total targets, union 200,900 → 201,373; none of
+    the 473 is a census entry). The comparison used the
     local census CSV under `Tools/analysis/` and the analysis JSON; both
     are game-derived and stay ignored.
 

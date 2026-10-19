@@ -49,25 +49,32 @@ function looksLikePrologue(word) {
 }
 
 /**
- * Code pointers stored in .rodata: the u32 values that ADDR32 relocations
- * patch so they point into .text. These are table entries (vtables,
- * callback tables, tiny constant getters) reachable from data only; e.g.
- * v208 `FUN_031FA4CC` (the GraphicsSystem method at vtable+0x5C) is one.
- * Returns the set of aligned addresses inside [base, textEnd).
+ * Code pointers stored in `.rodata` and `.data`: the u32 values that ADDR32
+ * relocations patch so they point into .text. These are table entries
+ * (vtables, callback tables, tiny constant getters) reachable from data
+ * only; e.g. v208 `FUN_031FA4CC` (the GraphicsSystem method at vtable+0x5C)
+ * is one. `.data` carries the same kind of patched pointers (static init
+ * tables), so both relocation sections are scanned. Returns the set of
+ * aligned addresses inside [base, textEnd).
  */
 function readTextPointers(buf, parsed, base, textEnd) {
     const out = new Set();
-    const rodata = rpxlib.findSection(parsed, ".rodata");
-    const rela = rpxlib.findSection(parsed, ".rela.rodata");
-    if (!rodata || !rela) return out;
-    const { data } = rpxlib.readSectionData(buf, rodata);
-    const { relocations } = rpxlib.readRelocations(buf, parsed, ".rela.rodata");
-    for (const r of relocations) {
-        if (r.type !== 1) continue; // R_PPC_ADDR32
-        const off = (r.offset - rodata.addr) >>> 0;
-        if (off + 4 > data.length) continue;
-        const word = data.readUInt32BE(off);
-        if (word >= base && word < textEnd && (word & 3) === 0) out.add(word >>> 0);
+    for (const [sectionName, relaName] of [
+        [".rodata", ".rela.rodata"],
+        [".data", ".rela.data"],
+    ]) {
+        const section = rpxlib.findSection(parsed, sectionName);
+        const rela = rpxlib.findSection(parsed, relaName);
+        if (!section || !rela) continue;
+        const { data } = rpxlib.readSectionData(buf, section);
+        const { relocations } = rpxlib.readRelocations(buf, parsed, relaName);
+        for (const r of relocations) {
+            if (r.type !== 1) continue; // R_PPC_ADDR32
+            const off = (r.offset - section.addr) >>> 0;
+            if (off + 4 > data.length) continue;
+            const word = data.readUInt32BE(off);
+            if (word >= base && word < textEnd && (word & 3) === 0) out.add(word >>> 0);
+        }
     }
     return out;
 }
@@ -133,10 +140,10 @@ function analyzeRpx(buf, parsed, opts = {}) {
     }
     for (const t of blTargets) starts.add(t);
 
-    // Pointer-only entries: table pointers in .rodata that no branch
-    // reaches. Kept apart from the branch-derived census (so both can be
-    // compared with the local Ghidra census); the translator merges them
-    // when it needs translation ranges.
+    // Pointer-only entries: table pointers in `.rodata`/`.data` that no
+    // branch reaches. Kept apart from the branch-derived census (so both
+    // can be compared with the local Ghidra census); the translator merges
+    // them when it needs translation ranges.
     const pointerSet = readTextPointers(buf, parsed, base, textEnd);
     const extraPointerStarts = [...pointerSet].filter((p) => !starts.has(p)).sort((a, b) => a - b);
 
