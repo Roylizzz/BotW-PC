@@ -13,7 +13,8 @@
  *   offset 8   segment count (1..PPCX_IMAGE_MAX_SEGMENTS)
  *   offset 12  Fletcher-32 of the payload region (bytes after the table)
  *   offset 16  segment table, 16 bytes per entry:
- *                addr, size, payload offset (0 for BSS), flags (bit 0 = BSS)
+ *                addr, size, payload offset (0 for BSS), flags
+ *                (bit 0 = BSS, bit 1 = writable; other bits are rejected)
  *   then       payloads in entry order, no padding
  *
  * The loader validates the whole structure and the payload checksum before
@@ -27,6 +28,7 @@
 #include "ppcx_abi.h"
 
 #define PPCX_IMAGE_FLAG_BSS 0x1u
+#define PPCX_IMAGE_FLAG_WRITE 0x2u
 #define PPCX_IMAGE_MAX_SEGMENTS 1024u
 
 typedef struct PpcxImageSegment {

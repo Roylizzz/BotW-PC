@@ -36,7 +36,8 @@ const rpxlib = require("../../rpxinfo/lib/rpx.js");
  *   offset 8   segment count (1..PPCX_IMAGE_MAX_SEGMENTS)
  *   offset 12  Fletcher-32 of the payload region (bytes after the table)
  *   offset 16  segment table, 16 bytes per entry:
- *                addr, size, payload offset (0 for BSS), flags (bit 0 BSS)
+ *                addr, size, payload offset (0 for BSS), flags
+ *                (bit 0 = BSS, bit 1 = writable; other bits are rejected)
  *   then       payloads in entry order, no padding
  */
 const IMAGE_MAGIC = Buffer.from("PPCXIMG1", "ascii");
@@ -44,6 +45,8 @@ const IMAGE_HEADER_SIZE = 16;
 const IMAGE_ENTRY_SIZE = 16;
 const IMAGE_MAX_SEGMENTS = 1024;
 const IMAGE_FLAG_BSS = 0x1;
+const IMAGE_FLAG_WRITE = 0x2;
+const IMAGE_FLAG_KNOWN = IMAGE_FLAG_BSS | IMAGE_FLAG_WRITE;
 
 /* Mirrors PPCX_ARENA_BYTES in src/runtime/include/ppcx_abi.h. */
 const ARENA_BYTES = 0xc2000000;
@@ -151,7 +154,7 @@ function buildImage(buf, parsed) {
             name: s.name || `section-${s.index}`,
             addr: s.addr >>> 0,
             size: s.logicalSize >>> 0,
-            flags: bss ? IMAGE_FLAG_BSS : 0,
+            flags: (bss ? IMAGE_FLAG_BSS : 0) | ((s.flags & SHF_WRITE) !== 0 ? IMAGE_FLAG_WRITE : 0),
             data,
             elfFlags: s.flags >>> 0,
         });
@@ -319,6 +322,9 @@ function serializeImage(plan) {
         if (addr < prevEnd) {
             issues.push(`segment ${seg.name} at 0x${hex8(addr)} overlaps the previous segment`);
         }
+        if (((seg.flags >>> 0) & ~IMAGE_FLAG_KNOWN) !== 0) {
+            issues.push(`segment ${seg.name} has unknown flags 0x${(seg.flags >>> 0).toString(16)}`);
+        }
         if (seg.flags & IMAGE_FLAG_BSS) {
             if (seg.data) issues.push(`segment ${seg.name} is BSS but carries a payload`);
         } else if (!seg.data || seg.data.length !== size) {
@@ -383,6 +389,9 @@ function readImageBlob(buf) {
         const payloadOffset = buf.readUInt32BE(entry + 8);
         const flags = buf.readUInt32BE(entry + 12);
         if (size === 0) throw new ImageError(`segment ${i} is empty`);
+        if ((flags & ~IMAGE_FLAG_KNOWN) !== 0) {
+            throw new ImageError(`segment ${i} has unknown flags 0x${(flags >>> 0).toString(16)}`);
+        }
         if (addr + size > ARENA_BYTES) {
             throw new ImageError(`segment ${i} (0x${hex8(addr)}+${size}) leaves the guest arena`);
         }
@@ -412,6 +421,7 @@ module.exports = {
     IMAGE_ENTRY_SIZE,
     IMAGE_MAX_SEGMENTS,
     IMAGE_FLAG_BSS,
+    IMAGE_FLAG_WRITE,
     ARENA_BYTES,
     relocationName,
 };

@@ -10,13 +10,17 @@
  *
  *   - raw mode: without ppcx_mem_reset the accessors keep the flat-address
  *     behavior, even outside every (future) region;
- *   - basic mode: region registration (out of order, sorted listing),
- *     duplicate/overlap/invalid return codes, and boundary/unaligned/host
- *     accesses at the first and last byte of each region;
+ *   - basic mode: region registration (out of order, sorted listing), the
+ *     permission of each region, duplicate/overlap/invalid return codes
+ *     (including a duplicate with different permissions), and
+ *     boundary/unaligned/host accesses at the first and last byte of each
+ *     region;
  *   - fault mode: one child process per illegal access; each must print the
  *     exact diagnostic on stderr and exit with code 9, before any byte of
- *     the target address is touched;
- *   - hook mode: the registered fault hook runs before the exit;
+ *     the target address is touched. This covers accesses outside every
+ *     region and writes to a read-only region;
+ *   - hook mode: the registered fault hook runs before the exit, for both
+ *     kinds of fault;
  *   - determinism: the same fault twice produces byte-identical output.
  *
  * `node tests/mem/run.js` exits non-zero on mismatch. Compiler discovery is
@@ -35,8 +39,9 @@ const RUNTIME_INCLUDE = path.join(ROOT, "src", "runtime", "include");
 const RUNTIME_MEM_SRC = path.join(ROOT, "src", "runtime", "src", "ppcx_mem.c");
 
 /* Regions installed by setup(): stack [0x70000,0x80000), b [0x22000,0x23000),
- * data [0x10000,0x20000). The arena is 1 MiB; the guest-arena bound itself
- * is exercised with a wrap-around fault instead of a 3 GiB allocation. */
+ * data [0x10000,0x20000) and the read-only ro [0x24000,0x25000). The arena is
+ * 1 MiB; the guest-arena bound itself is exercised with a wrap-around fault
+ * instead of a 3 GiB allocation. */
 const ARENA_TEST_BYTES = 0x00100000;
 const STACK_TOP = 0x00080000;
 const STACK_BYTES = 0x00010000;
@@ -44,6 +49,8 @@ const REGION_DATA = 0x00010000;
 const REGION_DATA_SIZE = 0x00010000;
 const REGION_B = 0x00022000;
 const REGION_B_SIZE = 0x00001000;
+const REGION_RO = 0x00024000;
+const REGION_RO_SIZE = 0x00001000;
 
 function hex32(v) {
     return (v >>> 0).toString(16).padStart(8, "0").toUpperCase();
@@ -51,6 +58,13 @@ function hex32(v) {
 
 function faultLine(kind, size, ea) {
     return `ppcx: guest memory fault: ${kind} of ${size} byte(s) at 0x${hex32(ea)} is not inside any mapped region`;
+}
+
+function permLine(size, ea, tag, start, regionSize) {
+    return (
+        `ppcx: guest memory fault: write of ${size} byte(s) at 0x${hex32(ea)} is not allowed ` +
+        `(region "${tag}" at 0x${hex32(start)}+${regionSize} is read-only)`
+    );
 }
 
 function buildRaw() {
@@ -78,7 +92,7 @@ function buildBasic() {
     };
 
     line('printf("active=%d\\n", ppcx_mem_active);', "active=1");
-    line('printf("regions=%u\\n", ppcx_mem_region_count());', "regions=3");
+    line('printf("regions=%u\\n", ppcx_mem_region_count());', "regions=4");
     code.push("    for (unsigned k = 0; k < ppcx_mem_region_count(); k++) {");
     code.push("        u32 s, z; const char *t;");
     code.push("        if (!ppcx_mem_region_at(k, &s, &z, &t)) return 3;");
@@ -87,16 +101,37 @@ function buildBasic() {
     expected.push(
         `region0=${hex32(REGION_DATA)}+${hex32(REGION_DATA_SIZE)} data`,
         `region1=${hex32(REGION_B)}+${hex32(REGION_B_SIZE)} b`,
-        `region2=${hex32(STACK_TOP - STACK_BYTES)}+${hex32(STACK_BYTES)} stack`
+        `region2=${hex32(REGION_RO)}+${hex32(REGION_RO_SIZE)} ro`,
+        `region3=${hex32(STACK_TOP - STACK_BYTES)}+${hex32(STACK_BYTES)} stack`
     );
 
-    /* Duplicate registration succeeds without doubling the map; overlapping,
-     * empty and out-of-arena ranges fail with their documented codes. */
+    /* Permissions are attached to each region; the read-only region is
+     * readable (the arena starts zeroed) but rejects writes in fault mode. */
+    code.push("    for (unsigned k = 0; k < ppcx_mem_region_count(); k++) {");
+    code.push("        unsigned p;");
+    code.push("        if (!ppcx_mem_region_permissions(k, &p)) return 4;");
+    code.push('        printf("perm%u=%u\\n", k, p);');
+    code.push("    }");
+    expected.push("perm0=1", "perm1=1", "perm2=0", "perm3=1");
+    line('printf("rd32-ro=%08X\\n", (unsigned)ppcx_rd32(0x00024000u));', "rd32-ro=00000000");
+
+    /* Duplicate registration succeeds without doubling the map; an exact
+     * duplicate with different permissions is a conflict. Overlapping, empty,
+     * unknown-permission and out-of-arena ranges fail with their codes. */
     line('printf("add-dup=%d\\n", ppcx_mem_add(0x00010000u, 0x00010000u, "dup"));', "add-dup=0");
+    line(
+        'printf("add-dup-perm=%d\\n", ppcx_mem_add_perm(0x00010000u, 0x00010000u, "dup", PPCX_MEM_WRITE));',
+        "add-dup-perm=0"
+    );
+    line(
+        'printf("add-conflict=%d\\n", ppcx_mem_add_perm(0x00010000u, 0x00010000u, "dup", 0u));',
+        "add-conflict=-4"
+    );
     line('printf("add-overlap=%d\\n", ppcx_mem_add(0x00018000u, 0x00002000u, "over"));', "add-overlap=-1");
     line('printf("add-invalid=%d\\n", ppcx_mem_add(0x00030000u, 0u, "zero"));', "add-invalid=-3");
+    line('printf("add-badperm=%d\\n", ppcx_mem_add_perm(0x00026000u, 0x00001000u, "bad", 0x80u));', "add-badperm=-3");
     line('printf("add-outside=%d\\n", ppcx_mem_add(0xC1FFFFFCu, 8u, "past"));', "add-outside=-3");
-    line('printf("regions-unchanged=%u\\n", ppcx_mem_region_count());', "regions-unchanged=3");
+    line('printf("regions-unchanged=%u\\n", ppcx_mem_region_count());', "regions-unchanged=4");
 
     /* Boundary and unaligned accesses, all inside a mapped region. */
     stmt("ppcx_wr32(0x00010000u, 0x11223344u);");
@@ -160,6 +195,26 @@ function buildFaults() {
         { id: "host-read-in-arena-hole", stmt: "ppcx_rd32_host(0x00030000u);", kind: "read", size: 4, ea: 0x00030000 },
         { id: "dcbz-unmapped", stmt: "ppcx_dcbz(0x00023020u);", kind: "write", size: 32, ea: 0x00023020 },
         { id: "read-below-stack", stmt: "ppcx_rd32(0x0006FFFCu);", kind: "read", size: 4, ea: 0x0006fffc },
+        {
+            id: "write-to-readonly",
+            stmt: "ppcx_wr32(0x00024000u, 1u);",
+            line: permLine(4, 0x00024000, "ro", REGION_RO, REGION_RO_SIZE),
+        },
+        {
+            id: "write8-to-readonly-last",
+            stmt: "ppcx_wr8(0x00024FFFu, 1u);",
+            line: permLine(1, 0x00024fff, "ro", REGION_RO, REGION_RO_SIZE),
+        },
+        {
+            id: "write-straddles-readonly-last-word",
+            stmt: "ppcx_wr16(0x00024FFEu, 0x1234u);",
+            line: permLine(2, 0x00024ffe, "ro", REGION_RO, REGION_RO_SIZE),
+        },
+        {
+            id: "dcbz-readonly",
+            stmt: "ppcx_dcbz(0x00024020u);",
+            line: permLine(32, 0x00024020, "ro", REGION_RO, REGION_RO_SIZE),
+        },
     ];
 }
 
@@ -176,8 +231,13 @@ function buildDriver(raw, basic, faults) {
     out.push("");
     out.push("static void setup(void) {");
     out.push(`    ppcx_mem_reset(0x${hex32(STACK_TOP)}u, 0x${hex32(STACK_BYTES)}u);`);
-    out.push(`    ppcx_mem_add(0x${hex32(REGION_B)}u, 0x${hex32(REGION_B_SIZE)}u, "b");`);
-    out.push(`    ppcx_mem_add(0x${hex32(REGION_DATA)}u, 0x${hex32(REGION_DATA_SIZE)}u, "data");`);
+    out.push(
+        `    ppcx_mem_add_perm(0x${hex32(REGION_B)}u, 0x${hex32(REGION_B_SIZE)}u, "b", PPCX_MEM_WRITE);`
+    );
+    out.push(
+        `    ppcx_mem_add_perm(0x${hex32(REGION_DATA)}u, 0x${hex32(REGION_DATA_SIZE)}u, "data", PPCX_MEM_WRITE);`
+    );
+    out.push(`    ppcx_mem_add_perm(0x${hex32(REGION_RO)}u, 0x${hex32(REGION_RO_SIZE)}u, "ro", 0u);`);
     out.push("}");
     out.push("");
     out.push("static void my_hook(u32 ea, unsigned size, unsigned write) {");
@@ -203,6 +263,13 @@ function buildDriver(raw, basic, faults) {
     out.push("        ppcx_mem_set_fault_hook(my_hook);");
     out.push('        printf("hook-set=1\\n");');
     out.push("        ppcx_wr8(0x00023000u, 1u);");
+    out.push('        printf("hook-survived=1\\n");');
+    out.push("        return 0;");
+    out.push("    }");
+    out.push('    if (strcmp(mode, "hook-ro") == 0) {');
+    out.push("        ppcx_mem_set_fault_hook(my_hook);");
+    out.push('        printf("hook-set=1\\n");');
+    out.push("        ppcx_wr32(0x00024000u, 1u);");
     out.push('        printf("hook-survived=1\\n");');
     out.push("        return 0;");
     out.push("    }");
@@ -276,7 +343,7 @@ function runCompiled(compiler, workDir) {
 
     /* Fault mode: one process per illegal access, exit 9, exact diagnostic. */
     for (const f of faults) {
-        const want = faultLine(f.kind, f.size, f.ea);
+        const want = f.line || faultLine(f.kind, f.size, f.ea);
         const r = run(["fault", f.id]);
         const stderr = lines(r.stderr);
         if (r.status !== 9) {
@@ -292,7 +359,8 @@ function runCompiled(compiler, workDir) {
         }
     }
 
-    /* Hook mode: the hook runs before the exit with the exact fault tuple. */
+    /* Hook mode: the hook runs before the exit with the exact fault tuple,
+     * for an unmapped access and for a write to a read-only region. */
     const wantHook = faultLine("write", 1, 0x00023000);
     const hookRun = run(["hook"]);
     const hookOut = lines(hookRun.stdout);
@@ -304,11 +372,36 @@ function runCompiled(compiler, workDir) {
         });
     }
 
+    const wantHookRo = permLine(4, 0x00024000, "ro", REGION_RO, REGION_RO_SIZE);
+    const hookRoRun = run(["hook-ro"]);
+    const hookRoOut = lines(hookRoRun.stdout);
+    const hookRoErr = lines(hookRoRun.stderr);
+    if (
+        hookRoRun.status !== 9 ||
+        hookRoOut.join("|") !== "hook-set=1|hook 00024000 4 1" ||
+        hookRoErr.length !== 1 ||
+        hookRoErr[0] !== wantHookRo
+    ) {
+        failures.push({
+            id: "hook-ro",
+            detail: `exit ${hookRoRun.status}, stdout ${JSON.stringify(hookRoOut)}, stderr ${JSON.stringify(hookRoErr)}`,
+        });
+    }
+
     /* Determinism: the same fault twice is byte-identical on both streams. */
     const first = run(["fault", faults[0].id]);
     const second = run(["fault", faults[0].id]);
     if (first.status !== second.status || first.stdout !== second.stdout || first.stderr !== second.stderr) {
         failures.push({ id: "determinism", detail: "two runs of the same fault differed" });
+    }
+    const permFirst = run(["fault", "write-to-readonly"]);
+    const permSecond = run(["fault", "write-to-readonly"]);
+    if (
+        permFirst.status !== permSecond.status ||
+        permFirst.stdout !== permSecond.stdout ||
+        permFirst.stderr !== permSecond.stderr
+    ) {
+        failures.push({ id: "determinism-readonly", detail: "two runs of the read-only fault differed" });
     }
 
     return {

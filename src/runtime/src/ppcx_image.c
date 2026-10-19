@@ -105,7 +105,7 @@ long ppcx_image_load_memory(const u8 *blob, size_t len, PpcxImageReport *report,
         if (size == 0u) {
             PPCX_IMAGE_FAIL(-5, "segment %u is empty", (unsigned)i);
         }
-        if ((flags & ~PPCX_IMAGE_FLAG_BSS) != 0u) {
+        if ((flags & ~(PPCX_IMAGE_FLAG_BSS | PPCX_IMAGE_FLAG_WRITE)) != 0u) {
             PPCX_IMAGE_FAIL(-5, "segment %u has unknown flags 0x%08X", (unsigned)i, (unsigned)flags);
         }
         if ((u64)addr + (u64)size > (u64)PPCX_ARENA_BYTES) {
@@ -141,7 +141,9 @@ long ppcx_image_load_memory(const u8 *blob, size_t len, PpcxImageReport *report,
             const u8 *entry = blob + PPCX_IMAGE_HEADER_SIZE + (size_t)i * PPCX_IMAGE_ENTRY_SIZE;
             u32 addr = ppcx_image_rd32(entry);
             u32 size = ppcx_image_rd32(entry + 4);
-            if (ppcx_mem_add(addr, size, "image") != 0) {
+            u32 flags = ppcx_image_rd32(entry + 12);
+            unsigned perm = (flags & PPCX_IMAGE_FLAG_WRITE) != 0u ? PPCX_MEM_WRITE : 0u;
+            if (ppcx_mem_add_perm(addr, size, "image", perm) != 0) {
                 PPCX_IMAGE_FAIL(-10, "segment %u (0x%08X+%u) cannot be registered as a live region",
                                 (unsigned)i, (unsigned)addr, (unsigned)size);
             }

@@ -17,6 +17,7 @@ typedef struct PpcxMemRegion {
     u32 start;
     u32 size;
     const char *tag;
+    unsigned perm;
 } PpcxMemRegion;
 
 static PpcxMemRegion g_regions[PPCX_MEM_MAX_REGIONS];
@@ -36,23 +37,27 @@ void ppcx_mem_reset(u32 stack_top, u32 stack_size) {
     g_region_count = 0u;
     ppcx_mem_active = 1;
     if (stack_size != 0u && (u64)stack_size <= (u64)stack_top) {
-        (void)ppcx_mem_add(stack_top - stack_size, stack_size, "stack");
+        (void)ppcx_mem_add_perm(stack_top - stack_size, stack_size, "stack", PPCX_MEM_WRITE);
     }
 }
 
 int ppcx_mem_add(u32 start, u32 size, const char *tag) {
+    return ppcx_mem_add_perm(start, size, tag, PPCX_MEM_WRITE);
+}
+
+int ppcx_mem_add_perm(u32 start, u32 size, const char *tag, unsigned perm) {
     const u64 end = (u64)start + (u64)size;
     unsigned i;
     unsigned at;
 
-    if (size == 0u || end > (u64)PPCX_ARENA_BYTES) {
+    if (size == 0u || end > (u64)PPCX_ARENA_BYTES || (perm & ~PPCX_MEM_WRITE) != 0u) {
         return -3;
     }
     for (i = 0; i < g_region_count; i++) {
         const PpcxMemRegion *r = &g_regions[i];
         const u64 rend = (u64)r->start + (u64)r->size;
         if (start == r->start && size == r->size) {
-            return 0; /* exact duplicate: idempotent re-registration */
+            return r->perm == perm ? 0 : -4; /* exact duplicate: idempotent only with the same permissions */
         }
         if ((u64)start < rend && (u64)r->start < end) {
             return -1; /* partial overlap */
@@ -71,6 +76,7 @@ int ppcx_mem_add(u32 start, u32 size, const char *tag) {
     g_regions[at].start = start;
     g_regions[at].size = size;
     g_regions[at].tag = tag;
+    g_regions[at].perm = perm;
     g_region_count++;
     return 0;
 }
@@ -93,6 +99,14 @@ int ppcx_mem_region_at(unsigned index, u32 *start, u32 *size, const char **tag) 
     return 1;
 }
 
+int ppcx_mem_region_permissions(unsigned index, unsigned *perm) {
+    if (index >= g_region_count) {
+        return 0;
+    }
+    if (perm != NULL) *perm = g_regions[index].perm;
+    return 1;
+}
+
 void ppcx_mem_check(u32 ea, unsigned size, unsigned write) {
     unsigned i;
 
@@ -100,9 +114,21 @@ void ppcx_mem_check(u32 ea, unsigned size, unsigned write) {
         return;
     }
     for (i = 0; i < g_region_count; i++) {
-        if (ppcx_mem_contains(&g_regions[i], ea, size)) {
-            return;
+        const PpcxMemRegion *r = &g_regions[i];
+        if (!ppcx_mem_contains(r, ea, size)) {
+            continue;
         }
+        if (write && (r->perm & PPCX_MEM_WRITE) == 0u) {
+            fprintf(stderr,
+                    "ppcx: guest memory fault: write of %u byte(s) at 0x%08X is not allowed "
+                    "(region \"%s\" at 0x%08X+%u is read-only)\n",
+                    size, (unsigned)ea, r->tag, (unsigned)r->start, (unsigned)r->size);
+            if (g_fault_hook != NULL) {
+                g_fault_hook(ea, size, write);
+            }
+            exit(9);
+        }
+        return;
     }
     fprintf(stderr,
             "ppcx: guest memory fault: %s of %u byte(s) at 0x%08X is not inside any mapped region\n",

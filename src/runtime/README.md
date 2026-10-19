@@ -12,9 +12,10 @@ It provides:
   validating structure, segment order, guest-arena bounds and the payload
   checksum, so a rejected blob never leaves a partial image behind,
 * the checked guest-memory model (`src/runtime/src/ppcx_mem.c`): a region
-  map (stack plus every loaded segment) behind all guest accessors; an
-  access outside every region stops with a diagnostic and exit code 9
-  instead of silently reading or writing unrelated arena bytes,
+  map (stack plus every loaded segment, each with the ELF write permission)
+  behind all guest accessors; an access outside every region or a write to a
+  read-only region stops with a diagnostic and exit code 9 instead of
+  silently reading or writing unrelated arena bytes,
 * the function registry and its dispatcher (`ppcx_dispatch`),
 * diagnostics with full register context for untranslated instructions and
   unregistered targets,
@@ -73,14 +74,27 @@ ppcx: guest memory fault: read of 4 byte(s) at 0x00020000 is not inside any mapp
 
 followed by the register context and terminates with exit code 9. Without
 `PPCX_IMAGE` only the stack is mapped, so a function that reads data faults
-loudly instead of reading unrelated zero bytes. Regions currently carry no
-permissions: every mapped region is readable and writable (per-section
-write protection needs the ELF section flags in the blob, a later step).
+loudly instead of reading unrelated zero bytes.
+
+Regions also carry permissions: the stack is read/write, and every loaded
+segment is writable only when its ELF section flags included `SHF_WRITE`
+(the loader reads that bit from the blob). A write to a read-only region has
+its own diagnostic and the same exit code 9:
+
+```
+ppcx: guest memory fault: write of 4 byte(s) at 0x00010000 is not allowed (region "image" at 0x00010000+64 is read-only)
+```
+
+On v208, `.text` (plus `.syscall`, the import tables and the allocated
+metadata) is read-only, while `.rodata`, `.data`, `.module_id`, `.bss` and
+`.thrbss` are writable. Executable permission is not enforced: translated
+code is native C and never fetches guest bytes.
 
 Harnesses that never call `ppcx_mem_reset` (the ISA oracle harness) keep the
 raw flat-address behavior; the compiled checked-memory tests live in
 `tests/mem` and the loader harness in `tests/loader` proves that a loaded
-image is exactly the registered region set.
+image is exactly the registered region set, with the permissions derived
+from the blob flags.
 
 ## Loader error codes
 

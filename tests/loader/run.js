@@ -17,7 +17,10 @@
  *     is written (a sentinel word must survive);
  *   - the Fletcher-32 checksum implementation agreeing with the JS one on
  *     exact block-size boundaries (0, 3, 359, 360, 1000 bytes);
- *   - the file path (ppcx_image_load_file) loading the same bytes.
+ *   - the file path (ppcx_image_load_file) loading the same bytes;
+ *   - the per-segment permissions derived from the ELF section flags, and a
+ *     write to a loaded read-only `.text` segment faulting with exit 9 and
+ *     the exact diagnostic.
  *
  * `node tests/loader/run.js` exits non-zero on mismatch. Compiler discovery
  * is shared with the ISA harness (PPCX_CC, then cc/gcc/clang/tcc).
@@ -58,6 +61,17 @@ function pattern(len, seed) {
     const buf = Buffer.alloc(len);
     for (let i = 0; i < len; i++) buf[i] = (i * 7 + seed) & 0xff;
     return buf;
+}
+
+function faultLine(kind, size, ea) {
+    return `ppcx: guest memory fault: ${kind} of ${size} byte(s) at 0x${hex8(ea)} is not inside any mapped region`;
+}
+
+function permLine(size, ea, tag, start, regionSize) {
+    return (
+        `ppcx: guest memory fault: write of ${size} byte(s) at 0x${hex8(ea)} is not allowed ` +
+        `(region "${tag}" at 0x${hex8(start)}+${regionSize} is read-only)`
+    );
 }
 
 function buildNegatives(blob, sections) {
@@ -141,6 +155,16 @@ function buildScenario() {
     expected.push("rc ok-memory=0", "msg ok-memory=empty", reportLine("ok-memory"));
     for (const [addr, value] of f.expected.probes) expected.push(`mem ${hex8(addr)}=${hex32(value)}`);
     expected.push(`mem-regions-after=${1 + stats.sections}`);
+    /*
+     * Permissions come from the fixture-authored ELF flags, not from the
+     * loader: .text and the allocated metadata are read-only, .rodata/.data/
+     * .bss and the stack are read/write.
+     */
+    const permProbes = [
+        ...f.expected.segments.map((s) => ({ addr: s.addr, write: s.write })),
+        { addr: 0x00030000, write: true }, /* stack [0x30000,0x40000) */
+    ];
+    for (const p of permProbes) expected.push(`perm ${hex8(p.addr)}=${p.write ? 1 : 0}`);
     expected.push("rc ok-file=0", "msg ok-file=empty", reportLine("ok-file"));
     for (const [addr, value] of f.expected.probes) expected.push(`mem-file ${hex8(addr)}=${hex32(value)}`);
     /* The second load re-registers the same ranges: idempotent, not doubled. */
@@ -153,6 +177,7 @@ function buildScenario() {
         patterns,
         expected,
         probeAddrs: f.expected.probes.map(([addr]) => addr),
+        permProbes,
         arenaBytes: ARENA_TEST_BYTES,
     };
 }
@@ -182,6 +207,20 @@ function buildDriver(scenario) {
     out.push("           (unsigned)r->segments, (unsigned)r->bss_segments,");
     out.push("           (unsigned)(r->bytes >> 32), (unsigned)(r->bytes & 0xFFFFFFFFu),");
     out.push("           (unsigned)(r->payload_bytes >> 32), (unsigned)(r->payload_bytes & 0xFFFFFFFFu));");
+    out.push("}");
+    out.push("");
+    out.push("static void perm_line(u32 addr) {");
+    out.push("    unsigned k;");
+    out.push("    for (k = 0; k < ppcx_mem_region_count(); k++) {");
+    out.push("        u32 s, z; const char *t; unsigned p;");
+    out.push("        (void)ppcx_mem_region_at(k, &s, &z, &t);");
+    out.push("        if (s == addr) {");
+    out.push("            (void)ppcx_mem_region_permissions(k, &p);");
+    out.push('            printf("perm %08X=%u\\n", (unsigned)addr, p);');
+    out.push("            return;");
+    out.push("        }");
+    out.push("    }");
+    out.push('    printf("perm %08X=missing\\n", (unsigned)addr);');
     out.push("}");
     out.push("");
     out.push("int main(int argc, char **argv) {");
@@ -223,6 +262,7 @@ function buildDriver(scenario) {
     out.push('    report_line("ok-memory", &report);');
     for (const addr of scenario.probeAddrs) out.push(`    dump("mem", ${"0x" + addr.toString(16).padStart(8, "0")}u);`);
     out.push('    printf("mem-regions-after=%u\\n", ppcx_mem_region_count());');
+    for (const p of scenario.permProbes) out.push(`    perm_line(${"0x" + p.addr.toString(16).padStart(8, "0")}u);`);
     out.push("");
     out.push("    /* The file path: same blob, same result. */");
     out.push("    memset(ppcx_memory, 0, ARENA_BYTES);");
@@ -235,6 +275,11 @@ function buildDriver(scenario) {
     out.push("    rc = ppcx_image_load_file(argv[2], &report, err, sizeof err);");
     out.push('    printf("rc missing-file=%ld\\n", rc);');
     out.push('    printf("msg missing-file=%s\\n", err[0] != \'\\0\' ? "set" : "empty");');
+    out.push("    /* Optional second run: a write to the loaded read-only .text must fault. */");
+    out.push('    if (argc >= 4 && strcmp(argv[3], "write-text") == 0) {');
+    out.push("        ppcx_wr32(0x00010000u, 0xDEADBEEFu);");
+    out.push('        printf("write-survived=1\\n");');
+    out.push("    }");
     out.push("    free(ppcx_memory);");
     out.push("    return 0;");
     out.push("}");
@@ -266,7 +311,7 @@ function compileAndRun(source, compiler, workDir, blob) {
     }
     const run = spawnSync(exePath, [imagePath, missingPath], { encoding: "utf8" });
     if (run.status !== 0) throw new Error(`the loader harness exited with ${run.status}\n${run.stderr}`);
-    return run.stdout;
+    return { stdout: run.stdout, exePath, imagePath, missingPath };
 }
 
 function runLoader(opts = {}) {
@@ -276,8 +321,8 @@ function runLoader(opts = {}) {
     const workDir = opts.workDir || fs.mkdtempSync(path.join(os.tmpdir(), "ppcx-loader-"));
     const scenario = buildScenario();
     const source = buildDriver(scenario);
-    const output = compileAndRun(source, compiler, workDir, scenario.blob);
-    const actual = output.split(/\r?\n/).filter((l) => l.length > 0);
+    const run = compileAndRun(source, compiler, workDir, scenario.blob);
+    const actual = run.stdout.split(/\r?\n/).filter((l) => l.length > 0);
 
     const failures = [];
     const lines = Math.max(scenario.expected.length, actual.length);
@@ -286,10 +331,30 @@ function runLoader(opts = {}) {
             failures.push({ line: i, expected: scenario.expected[i], actual: actual[i] });
         }
     }
+
+    /*
+     * Second process: after the same successful loads, write to the first
+     * byte of the loaded .text segment. The fixture authors .text as
+     * SHF_ALLOC|SHF_EXECINSTR (no SHF_WRITE), so the write must be rejected
+     * with the permission diagnostic, not silently accepted.
+     */
+    const writeRun = spawnSync(run.exePath, [run.imagePath, run.missingPath, "write-text"], { encoding: "utf8" });
+    const wantWrite = permLine(4, 0x00010000, "image", 0x00010000, 64);
+    const writeErr = writeRun.stderr.split(/\r?\n/).filter((l) => l.length > 0);
+    const readOnlyWrite = writeRun.status === 9 && writeErr.length === 1 && writeErr[0] === wantWrite;
+    if (!readOnlyWrite) {
+        failures.push({
+            line: -1,
+            expected: wantWrite,
+            actual: `exit ${writeRun.status}, stderr ${JSON.stringify(writeErr)}`,
+        });
+    }
+
     return {
         compiler,
         lines: actual.length,
         negativeBlobs: scenario.negatives.length,
+        readOnlyWrite,
         failures,
         workDir,
     };
@@ -302,7 +367,7 @@ function main() {
         return 0;
     }
     console.log(
-        `loader: ${res.lines} state lines, ${res.negativeBlobs} negative blobs, compiled with ${res.compiler}`
+        `loader: ${res.lines} state lines, ${res.negativeBlobs} negative blobs, read-only write fault, compiled with ${res.compiler}`
     );
     if (!res.failures.length) {
         console.log("loader: OK, the compiled loader matches the synthetic expectations");

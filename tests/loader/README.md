@@ -18,11 +18,12 @@ is synthetic: the RPX fixture is authored byte by byte in
    arena escape, overlap, payload escape, checksum);
 3. generates one C driver that runs `ppcx_image_load_memory` /
    `ppcx_image_load_file` over the blob and the variants, prints the mapped
-   words, the report counters and every error code, and probes the
-   Fletcher-32 implementation at the 359-byte block boundary; after the
-   negative blobs it installs the checked memory model
-   (`ppcx_mem_reset`), so the mapping, the segment registration and every
-   probe of the valid blob run through the checked accessors;
+   words, the report counters, every error code and the permission of each
+   registered segment, and probes the Fletcher-32 implementation at the
+   359-byte block boundary; after the negative blobs it installs the checked
+   memory model (`ppcx_mem_reset`), so the mapping, the segment registration
+   and every probe of the valid blob run through the checked accessors. A
+   second process then writes to the loaded read-only `.text`;
 4. compiles the driver together with `src/runtime/src/ppcx_image.c` and
    `src/runtime/src/ppcx_mem.c` using a real host compiler (shared
    discovery: `PPCX_CC`, then `cc`/`gcc`/`clang`/`tcc`) and compares the
@@ -31,7 +32,7 @@ is synthetic: the RPX fixture is authored byte by byte in
 Expected output:
 
 ```
-loader: 54 state lines, 10 negative blobs, compiled with <compiler>
+loader: 62 state lines, 10 negative blobs, read-only write fault, compiled with <compiler>
 loader: OK, the compiled loader matches the synthetic expectations
 ```
 
@@ -39,7 +40,12 @@ Negative cases must fail with their documented code **before** anything is
 written; the harness checks that a sentinel word survives every rejected
 blob. The region counters must show one region (the stack) before the first
 load, `1 + segments` after it, and the same value after the second load of
-the same blob (re-registration is idempotent).
+the same blob (re-registration is idempotent). The permission probes compare
+each loaded segment with the ELF flags authored in the fixture: `.text` and
+the allocated metadata are read-only, while `.rodata` (whose fixture section
+carries `SHF_WRITE`), `.data`, `.bss` and the stack are read/write. The
+second process writes to the first byte of the loaded `.text` and must exit
+with code 9 and the read-only diagnostic naming the `image` region.
 
 ```sh
 node tests/loader/run.js                      # CLI, exits non-zero on mismatch

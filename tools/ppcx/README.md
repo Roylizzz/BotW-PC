@@ -91,6 +91,9 @@ materializes zlib sections, zero-fills NOBITS sections, applies the
 self-describing `PPCXIMG1` blob the runtime maps with bounds, ordering and
 checksum checks — plus `build/ppcx/image.json`, the manifest (RPX/blob
 digests, per-segment table, applied and deferred relocation counts, notes).
+Every segment record carries the BSS bit and the ELF writable bit
+(`SHF_WRITE`), so the runtime installs the section permissions together with
+the address range.
 
 Policy, explicit and never silent:
 
@@ -104,9 +107,12 @@ Policy, explicit and never silent:
 
 Measured on v208 (2026-10-19): 31 segments, 43,155,811 bytes (41,756,342
 data + 1,399,469 BSS), 278,749 `R_PPC_ADDR32` applied, 889,935
-executable-section sites, 6 TLS sites deferred; the blob (41,756,854 bytes)
-builds in ~1.5 s and the runtime maps it in ~0.13 s with
-`PPCX_IMAGE=build/ppcx/image.bin` (see `src/runtime/README.md`).
+executable-section sites, 6 TLS sites deferred; 5 segments are writable
+(`.rodata`, `.data`, `.module_id`, `.bss`, `.thrbss`; 6,140,245 bytes) and
+26 read-only (`.text`, `.syscall`, the import tables and the allocated
+metadata; 37,015,566 bytes). The blob (41,756,854 bytes) builds in ~1.5 s
+and the runtime maps it in ~0.13 s with `PPCX_IMAGE=build/ppcx/image.bin`
+(see `src/runtime/README.md`).
 
 Fidelity notes: executable sections are mapped for data fidelity only —
 translated code does not execute from the arena and their relocation sites
@@ -151,7 +157,7 @@ deferred (see *Load image*).
 ## Tests
 
 ```sh
-cd tools/ppcx && npm test                                       # 96 decoder/translator/image cases
+cd tools/ppcx && npm test                                       # 97 decoder/translator/image cases
 # from the repository root: compiled harnesses (need a C compiler)
 node --test "tests/isa/*.test.js" "tests/loader/*.test.js" "tests/mem/*.test.js" "tools/ppcx/tests/*.test.js"
 ```
@@ -167,16 +173,19 @@ The loader harness (`tests/loader`) builds a synthetic load image with the
 real `lib/image.js`, compiles `src/runtime/src/ppcx_image.c` and
 `src/runtime/src/ppcx_mem.c` together with a generated driver and compares
 the mapped bytes, the report counters, ten corrupted-blob error codes,
-Fletcher-32 boundary probes and the registered-region counters against
-fixture-authored expectations (`node tests/loader/run.js` → `loader: OK`).
+Fletcher-32 boundary probes, the registered-region counters and the
+per-segment permissions against fixture-authored expectations. A second
+process writes to the loaded read-only `.text` and must exit 9 with the
+permission diagnostic (`node tests/loader/run.js` → `loader: OK`).
 
 The checked-memory harness (`tests/mem`) compiles the real
 `src/runtime/src/ppcx_mem.c` with a generated driver and verifies the region
 model through the guest accessors: raw mode without a model, region
-registration and boundary/unaligned/host accesses, nine illegal accesses
-each failing in its own process with exit code 9 and an exact diagnostic,
-the fault hook and run-to-run determinism (`node tests/mem/run.js` →
-`mem: OK`).
+registration, permissions and boundary/unaligned/host accesses, thirteen
+illegal accesses (nine outside every region and four writes to a read-only
+one) each failing in its own process with exit code 9 and an exact
+diagnostic, the fault hook and run-to-run determinism (`node
+tests/mem/run.js` → `mem: OK`).
 
 The native HLE contract test (`tests/hle/test_hle.c`, compiled with
 `cc -Wall -Wextra -Werror` in CI) covers the four modeled coreinit

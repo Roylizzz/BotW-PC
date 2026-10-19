@@ -104,8 +104,9 @@ typedef struct Cpu {
  *
  * Every accessor goes through the checked path: once the runtime installs a
  * region map (ppcx_mem_reset, see ppcx_mem.h) an access that does not fall
- * entirely inside one mapped region fails deterministically (diagnostic on
- * stderr, exit code 9) instead of silently touching unrelated arena bytes.
+ * entirely inside one mapped region, or a write to a region registered
+ * without PPCX_MEM_WRITE, fails deterministically (diagnostic on stderr,
+ * exit code 9) instead of silently touching unrelated arena bytes.
  * Harnesses that never install a map keep the raw flat-address behavior.
  */
 extern u8 *ppcx_memory;

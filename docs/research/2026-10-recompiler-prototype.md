@@ -169,11 +169,16 @@ first GX2 frame?
   anything else prints one deterministic diagnostic plus the register
   context and exits with code 9 (`src/runtime/src/ppcx_mem.c`; compiled
   harness in `tests/mem`, checked probes of the relocated synthetic image
-  in `tests/loader`). Per-section permissions stay open: every mapped
-  region is read/write until the blob carries the ELF section flags. The
-  next evidence to gather is a translated data-reading function running
-  against the real image, so that any unmodelled address (heap, MMIO,
-  import trampolines) faults loudly instead of returning zeroes.
+  in `tests/loader`). Permissions are derived from the ELF section flags in
+  the blob: on v208, 5 segments are writable (`.rodata`, `.data`,
+  `.module_id`, `.bss`, `.thrbss`; 6,140,245 bytes) and 26 read-only
+  (`.text`, `.syscall`, the import tables and the allocated metadata;
+  37,015,566 bytes); a write to a read-only region faults with its own
+  deterministic diagnostic and exit code 9. Executable permission is not
+  enforced because translated code is native C and never fetches guest
+  bytes. The next evidence to gather is a translated data-reading function
+  running against the real image, so that any unmodelled address (heap,
+  MMIO, import trampolines) faults loudly instead of returning zeroes.
 - **HLE tier 1:** coreinit (`OSGetCoreId`, `OSMemoryBarrier`,
   `OSGetSystemTime`, `OSBlockMove/Set`, `memcpy`, `_iob`,
   `__gh_FOPEN_MAX`), then proc_ui/padscore stubs.
