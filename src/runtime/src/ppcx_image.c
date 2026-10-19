@@ -5,10 +5,15 @@
  * build/ and is never committed. See src/runtime/README.md for the error
  * codes and ppcx_image.h for the format.
  *
+ * When the checked memory model is active (ppcx_mem.h) the loader registers
+ * every segment in its region map before mapping anything, so a loaded image
+ * is exactly the set of guest addresses the translated code may touch.
+ *
  * This C code is original to the BotW-PC project and licensed under MIT.
  */
 
 #include "ppcx_image.h"
+#include "ppcx_mem.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -100,7 +105,7 @@ long ppcx_image_load_memory(const u8 *blob, size_t len, PpcxImageReport *report,
         if (size == 0u) {
             PPCX_IMAGE_FAIL(-5, "segment %u is empty", (unsigned)i);
         }
-        if ((flags & ~PPCX_IMAGE_FLAG_BSS) != 0u) {
+        if ((flags & ~(PPCX_IMAGE_FLAG_BSS | PPCX_IMAGE_FLAG_WRITE)) != 0u) {
             PPCX_IMAGE_FAIL(-5, "segment %u has unknown flags 0x%08X", (unsigned)i, (unsigned)flags);
         }
         if ((u64)addr + (u64)size > (u64)PPCX_ARENA_BYTES) {
@@ -124,6 +129,25 @@ long ppcx_image_load_memory(const u8 *blob, size_t len, PpcxImageReport *report,
     }
     if (ppcx_image_fletcher32(blob + table_end, len - table_end) != stored_checksum) {
         PPCX_IMAGE_FAIL(-8, "payload checksum mismatch");
+    }
+
+    /*
+     * --- register the live regions (before any byte is written) ---------
+     * Only when the runtime installed the checked memory model; in raw
+     * harnesses the loader leaves no trace beyond the arena bytes.
+     */
+    if (ppcx_mem_active) {
+        for (i = 0; i < count; i++) {
+            const u8 *entry = blob + PPCX_IMAGE_HEADER_SIZE + (size_t)i * PPCX_IMAGE_ENTRY_SIZE;
+            u32 addr = ppcx_image_rd32(entry);
+            u32 size = ppcx_image_rd32(entry + 4);
+            u32 flags = ppcx_image_rd32(entry + 12);
+            unsigned perm = (flags & PPCX_IMAGE_FLAG_WRITE) != 0u ? PPCX_MEM_WRITE : 0u;
+            if (ppcx_mem_add_perm(addr, size, "image", perm) != 0) {
+                PPCX_IMAGE_FAIL(-10, "segment %u (0x%08X+%u) cannot be registered as a live region",
+                                (unsigned)i, (unsigned)addr, (unsigned)size);
+            }
+        }
     }
 
     /* --- map it -------------------------------------------------------- */

@@ -33,6 +33,11 @@ test("maps every allocated section in address order and skips the rest", () => {
         plan.segments.map((s) => [s.name, s.addr, s.size, s.flags & 1]),
         expected.segments.map((s) => [s.name, s.addr, s.size, s.bss ? 1 : 0])
     );
+    assert.deepEqual(
+        plan.segments.map((s) => ((s.flags & 2) !== 0 ? 1 : 0)),
+        expected.segments.map((s) => (s.write ? 1 : 0)),
+        "the writable flag comes from SHF_WRITE"
+    );
     assert.equal(plan.stats.sections, expected.stats.sections);
     assert.equal(plan.stats.bytes, expected.stats.bytes);
     assert.equal(plan.stats.payloadBytes, expected.stats.payloadBytes);
@@ -137,8 +142,8 @@ test("serializes and re-reads the blob", () => {
     const read = readImageBlob(blob);
     assert.equal(read.count, expected.stats.sections);
     assert.deepEqual(
-        read.segments.map((s) => [s.addr, s.size, s.flags & 1]),
-        expected.segments.map((s) => [s.addr, s.size, s.bss ? 1 : 0])
+        read.segments.map((s) => [s.addr, s.size, s.flags & 1, (s.flags & 2) !== 0 ? 1 : 0]),
+        expected.segments.map((s) => [s.addr, s.size, s.bss ? 1 : 0, s.write ? 1 : 0])
     );
     assert.equal(blob.readUInt32BE(12), fletcher32(blob.subarray(read.tableEnd)));
 
@@ -175,6 +180,17 @@ test("rejects a corrupted blob before it can be mapped", () => {
     const zeroCount = Buffer.from(blob);
     zeroCount.writeUInt32BE(0, 8);
     assert.throws(() => readImageBlob(zeroCount), /bad segment count/);
+
+    const badFlags = Buffer.from(blob);
+    badFlags.writeUInt32BE(0x4, 16 + 12);
+    assert.throws(() => readImageBlob(badFlags), /unknown flags 0x4/);
+});
+
+test("serializeImage rejects unknown segment flags", () => {
+    const { buf, parsed } = parsedFixture();
+    const plan = buildImage(buf, parsed);
+    const segments = plan.segments.map((s, i) => (i === 0 ? { ...s, flags: s.flags | 0x4 } : s));
+    assert.throws(() => serializeImage({ segments }), /unknown flags 0x/);
 });
 
 test("relocationName falls back to the raw number", () => {

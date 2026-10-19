@@ -191,13 +191,13 @@ function build() {
     writeU32(dataAfterRelocs, 0, 0x00020100); /* ADDR32 data_obj + 0 */
 
     const segments = [
-        { name: ".text", addr: 0x00010000, size: 64, bss: false },
-        { name: ".rodata", addr: 0x00020000, size: 16, bss: false },
-        { name: ".data", addr: 0x00020100, size: 8, bss: false },
-        { name: ".bss", addr: 0x00020200, size: 32, bss: true },
-        { name: ".shstrtab", addr: 0x00020300, size: shstr.length, bss: false },
-        { name: ".symtab", addr: 0x00020400, size: 64, bss: false },
-        { name: ".strtab", addr: 0x00020500, size: strtab.length, bss: false },
+        { name: ".text", addr: 0x00010000, size: 64, bss: false, write: false },
+        { name: ".rodata", addr: 0x00020000, size: 16, bss: false, write: true },
+        { name: ".data", addr: 0x00020100, size: 8, bss: false, write: true },
+        { name: ".bss", addr: 0x00020200, size: 32, bss: true, write: true },
+        { name: ".shstrtab", addr: 0x00020300, size: shstr.length, bss: false, write: false },
+        { name: ".symtab", addr: 0x00020400, size: 64, bss: false, write: false },
+        { name: ".strtab", addr: 0x00020500, size: strtab.length, bss: false, write: false },
     ];
     const bytes = segments.reduce((n, s) => n + s.size, 0);
 

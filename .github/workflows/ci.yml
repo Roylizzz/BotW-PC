@@ -46,6 +46,10 @@ jobs:
         env:
           PPCX_CC: cc
         run: node tests/loader/run.js
+      - name: Verify mapped guest memory access and deterministic fault behavior
+        env:
+          PPCX_CC: cc
+        run: node tests/mem/run.js
 
   coreinit-hle:
     name: Synthetic Cafe OS HLE tests
@@ -65,6 +69,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: Compile original runtime source without any game binaries
         run: |
-          cc -std=c11 -Wall -Wextra -Werror -I src/runtime/include -fsyntax-only src/runtime/src/main.c src/runtime/src/ppcx_runtime.c src/runtime/src/ppcx_image.c src/runtime/src/ppcx_hle.c
+          cc -std=c11 -Wall -Wextra -Werror -I src/runtime/include -fsyntax-only src/runtime/src/main.c src/runtime/src/ppcx_runtime.c src/runtime/src/ppcx_image.c src/runtime/src/ppcx_hle.c src/runtime/src/ppcx_mem.c
 
 # No Nintendo files, game dumps, generated derived code, assets or keys are used or uploaded.

@@ -21,7 +21,7 @@ first GX2 frame?
    `ppcx analyze` (boundaries + opcode coverage, cached) →
    `ppcx imports` (REL24/ADDR16 map) → `ppcx translate` (BFS over callees,
    emits one C function per guest function) → TCC → `src/runtime`
-   (flat arena, dispatcher, HLE entry points). Analysis of the whole
+   (region-checked arena, dispatcher, HLE entry points). Analysis of the whole
    module takes **~2.3 s**; nothing derived from the game is committed
    (generated C goes to the git-ignored `build/`).
 
@@ -74,13 +74,17 @@ first GX2 frame?
 
    ```
    ppcx: entry 0x031FA4CC, 1 translated function(s)
-   ppcx: HLE call #1: proc_ui.ProcUIInit (import 359)
    ppcx: entry returned, r3 = 0x031FA4C8
+   ppcx: HLE calls: 1 (unimplemented services remain)
    ```
 
-   This exercises decode, relocation-driven HLE substitution, the tail-call
-   convention, the dispatcher, the HLE name table and the TCC ABI in one
-   shot — and confirms the boot-path note's reading of that method.
+   `PPCX_HLE_TRACE=1` logs the per-call line (`HLE unimplemented #1:
+   proc_ui.ProcUIInit (import 359) [diagnostic no-op]`) and
+   `PPCX_HLE_STRICT=1` stops there with the register dump and exit code 5;
+   four coreinit core-identity calls are modeled and `ProcUIInit` is not one
+   of them. This exercises decode, relocation-driven HLE substitution, the
+   tail-call convention, the dispatcher, the HLE name table and the TCC ABI
+   in one shot — and confirms the boot-path note's reading of that method.
 
 7. **Runtime skeleton.** One flat arena of `0xC2000000` bytes covers every
    address the module is linked for (import slots sit at `0xC0000000`);
@@ -89,7 +93,8 @@ first GX2 frame?
    section uses: `.text` ends at `0x04347C2C`, data sections end at
    `~0x105DB1C0`); unsupported instructions and unregistered targets stop
    with an address + register dump. `PPCX_HLE_TRACE=1` logs every HLE call,
-   `PPCX_HLE_STRICT=1` aborts on the first.
+   `PPCX_HLE_STRICT=1` aborts on the first unimplemented one (exit code 5);
+   four coreinit identity calls are modeled and stay available.
 
 8. **Audit correction pass (2026-10-18).** An independent source audit fixed
    thirteen semantic defects in the runtime ABI, the decoder and the
@@ -158,6 +163,22 @@ first GX2 frame?
   are not observed in v208 and stay unmodelled. What remains for this item
   is the *code* that walks the loaded tables (HLE tier 1 below), not the
   image itself.
+- **Checked guest memory:** implemented 2026-10-19 (RUN-003) — `ppcx_run`
+  installs a region map (1 MiB of stack plus every loaded segment) and all
+  guest accessors require an access to fall entirely inside one region;
+  anything else prints one deterministic diagnostic plus the register
+  context and exits with code 9 (`src/runtime/src/ppcx_mem.c`; compiled
+  harness in `tests/mem`, checked probes of the relocated synthetic image
+  in `tests/loader`). Permissions are derived from the ELF section flags in
+  the blob: on v208, 5 segments are writable (`.rodata`, `.data`,
+  `.module_id`, `.bss`, `.thrbss`; 6,140,245 bytes) and 26 read-only
+  (`.text`, `.syscall`, the import tables and the allocated metadata;
+  37,015,566 bytes); a write to a read-only region faults with its own
+  deterministic diagnostic and exit code 9. Executable permission is not
+  enforced because translated code is native C and never fetches guest
+  bytes. The next evidence to gather is a translated data-reading function
+  running against the real image, so that any unmodelled address (heap,
+  MMIO, import trampolines) faults loudly instead of returning zeroes.
 - **HLE tier 1:** coreinit (`OSGetCoreId`, `OSMemoryBarrier`,
   `OSGetSystemTime`, `OSBlockMove/Set`, `memcpy`, `_iob`,
   `__gh_FOPEN_MAX`), then proc_ui/padscore stubs.

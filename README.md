@@ -9,10 +9,13 @@ of the Wild* — with the long-term goal of running it natively on PC.
 > (`tools/ppcx` + `src/runtime`) translates and runs real functions from a
 > contributor's own copy. The 2026-10-18 audit fixed PPC-001…PPC-013 and
 > re-verified them with a compiled differential harness. The 2026-10-19
-> follow-up adds the RPX load image (all allocated sections, `.bss`
+> follow-ups add the RPX load image (all allocated sections, `.bss`
 > zero-fill and 278,749 data relocations) with a runtime loader that
-> validates bounds, ordering and a payload checksum before mapping.
-> See [ROADMAP.md](ROADMAP.md).
+> validates bounds, ordering and a payload checksum before mapping, a
+> checked guest-memory model (stack + loaded segments; anything else faults
+> deterministically with exit code 9 instead of reading unrelated bytes)
+> and a minimal exact-name HLE registry for four coreinit core-identity
+> calls with strict unknown-call handling. See [ROADMAP.md](ROADMAP.md).
 
 ## What this project is
 
@@ -65,7 +68,7 @@ Read the full policy: [DISCLAIMER.md](DISCLAIMER.md) and
 - [Stabilization/implementation plan](docs/architecture/implementation-plan.md)
 - [REA and direct Ghidra guidance](docs/reverse-engineering/rea-guidance.md)
 
-The corrected decoder covers **99.9993%** of the module's words (9,248,451 of 9,248,515; no known-unsupported instructions, 64 unknown/data words), the audit defects are mutation-verified and the quantized paired-single loads/stores are differentially tested — coverage is still **not** behavioral correctness or game compatibility. The prototype does not boot a playable game; the section/data image now loads and maps under bounds/order/checksum checks, while checked pointer semantics, Cafe OS services and GPU presentation are unfinished (Phase 2B/2C of the implementation plan).
+The corrected decoder covers **99.9993%** of the module's words (9,248,451 of 9,248,515; no known-unsupported instructions, 64 unknown/data words), the audit defects are mutation-verified and the quantized paired-single loads/stores are differentially tested — coverage is still **not** behavioral correctness or game compatibility. The prototype does not boot a playable game; the section/data image now loads and maps under bounds/order/checksum checks and guest accesses outside the mapped regions (stack + loaded segments) fault deterministically, while loaded segments also carry their ELF write permission so writes to `.text` or the import tables stop with exit code 9; the rest of Cafe OS (only four core-identity calls are modeled) and GPU presentation are unfinished (Phase 2B/2C of the implementation plan).
 
 ## Legal
 
