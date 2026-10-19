@@ -18,12 +18,14 @@
 
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 
 const rpxlib = require("../rpxinfo/lib/rpx.js");
 const { analyzeRpx } = require("./lib/analyze.js");
 const { collectImports, buildImportMaps } = require("./lib/imports.js");
 const { decode } = require("./lib/decode.js");
 const { translateFunction, branchTarget, hex8, fnName, addrHex } = require("./lib/translate.js");
+const { buildImage, serializeImage, readImageBlob, ImageError } = require("./lib/image.js");
 
 const USAGE = `ppcx - PowerPC -> C recompiler prototype (BotW-PC)
 
@@ -33,6 +35,7 @@ Commands:
   analyze    --rpx <file> [--cache <json>] [--top N]
   imports    --rpx <file> [--module <name>] [--list] [--limit N]
   translate  --rpx <file> --fn <addr> [--follow N] [--max N] --out <dir> [--report <json>]
+  image      --rpx <file> [--out <dir>] [--expect-sha256 <hex>]
   disasm     --rpx <file> --addr <addr> [--count N]
 
 Addresses accept decimal or 0x-prefixed hex.
@@ -407,6 +410,77 @@ function cmdTranslate(args) {
 }
 
 // ---------------------------------------------------------------------------
+// image
+// ---------------------------------------------------------------------------
+
+function cmdImage(args) {
+    const file = args.rpx;
+    if (!file) fail("--rpx <file> is required");
+    const buf = fs.readFileSync(file);
+    const parsed = rpxlib.parseRpx(buf);
+    const outDir = args.out || "build/ppcx";
+
+    const sha256 = crypto.createHash("sha256").update(buf).digest("hex");
+    if (args["expect-sha256"] !== undefined) {
+        const expected = String(args["expect-sha256"]).toLowerCase();
+        if (expected !== sha256) fail(`RPX sha256 mismatch: expected ${expected}, file is ${sha256}`);
+    }
+
+    let plan;
+    let blob;
+    try {
+        plan = buildImage(buf, parsed);
+        blob = serializeImage(plan);
+    } catch (e) {
+        if (!(e instanceof ImageError)) throw e;
+        console.error(`ppcx: the load image has ${e.issues.length} problem(s):`);
+        for (const issue of e.issues.slice(0, 20)) console.error(`  ${issue}`);
+        if (e.issues.length > 20) console.error(`  ... and ${e.issues.length - 20} more`);
+        process.exit(2);
+    }
+
+    const blobSha = crypto.createHash("sha256").update(blob).digest("hex");
+    fs.mkdirSync(outDir, { recursive: true });
+    const binPath = path.join(outDir, "image.bin");
+    fs.writeFileSync(binPath, blob);
+
+    const manifest = {
+        rpx: file,
+        rpxSha256: sha256,
+        blobSha256: blobSha,
+        blobBytes: blob.length,
+        checksum: readImageBlob(blob).checksum,
+        stats: plan.stats,
+        relocations: plan.relocations,
+        segments: plan.segments.map((s) => ({
+            name: s.name,
+            addr: s.addr,
+            size: s.size,
+            bss: (s.flags & 1) !== 0,
+        })),
+        notes: plan.notes,
+    };
+    const jsonPath = path.join(outDir, "image.json");
+    fs.writeFileSync(jsonPath, JSON.stringify(manifest, null, 2));
+
+    console.log(`file:      ${file}`);
+    console.log(`sha256:    ${sha256}`);
+    console.log(`segments:  ${plan.stats.sections} mapped, ${plan.stats.bytes} bytes ` +
+        `(${plan.stats.payloadBytes} data + ${plan.stats.bssBytes} BSS)`);
+    for (const r of plan.relocations.applied) {
+        console.log(`relocs:    ${r.count} applied (${r.name})`);
+    }
+    console.log(`relocs:    ${plan.relocations.deferred.length} deferred (TLS), ` +
+        `${plan.relocations.code} in executable sections (recompiler), ${plan.relocations.none} none`);
+    for (const d of plan.relocations.deferred.slice(0, 10)) {
+        console.log(`  deferred: ${d.name} at 0x${hex8(d.addr)} (${d.section}, ${d.symbol || "no symbol"})`);
+    }
+    for (const n of plan.notes) console.log(`note:      ${n}`);
+    console.log(`wrote      ${binPath} (${blob.length} bytes, sha256 ${blobSha.slice(0, 16)}...)`);
+    console.log(`wrote      ${jsonPath}`);
+}
+
+// ---------------------------------------------------------------------------
 // disasm
 // ---------------------------------------------------------------------------
 
@@ -474,6 +548,8 @@ function main() {
             return cmdImports(args);
         case "translate":
             return cmdTranslate(args);
+        case "image":
+            return cmdImage(args);
         case "disasm":
             return cmdDisasm(args);
         default:

@@ -12,6 +12,7 @@ this repository.
 | Format | ELF32, big-endian, `EM_PPC` (PowerPC #20), custom `e_type=0xFE01` (RPX) |
 | Entry point | base `0x03AB62AC` / update v208 `0x03C70404` |
 | Sizes | base ≈ 21.0 MB / update v208 ≈ 22.2 MB |
+| SHA-256 (v208, local) | `ba58da5b95ce929e005d058ceb08b9b2788d1ab2bbc8a6c189bbadca0bb34d30` (pins our own copy; the file itself never leaves the workstation) |
 | Updates | v208 is the latest published update (the version upstream research commonly calls 1.5.0) |
 
 Notes for tooling:
@@ -32,7 +33,7 @@ Notes for tooling:
 | --------- | ------- | ----- |
 | Node.js | 24.20.0 | ✅ (REA requires 22.19+/24.11+/26+) |
 | JDK (Temurin) | 21 | ✅ (Ghidra 12.1.x requires 21+) |
-| [REA](https://github.com/morluto/rea) | 6.5.0 (npx) | ✅ CLI works |
+| [REA](https://github.com/morluto/rea) | 6.5.0 | ✅ MCP server connects (agent config launches absolute `node.exe` + `rea-agents/scripts/rea.mjs`; no `npx` in the loop) |
 | [Rizin](https://rizin.re/) | 0.9.1 | ✅ (multi-arch static disassembly) |
 | [Ghidra](https://ghidra-sre.org/) | 12.1.4 | ✅ installed locally + RPX/RPL loader extension (`CafeLoader`) |
 
@@ -75,6 +76,10 @@ analyzeHeadless <your-projects-dir> BotW -process U-King.rpx -noanalysis -readOn
   -postScript DecompileMatch.java 0x03C70404 entry.c
 ```
 
+In this workspace the project is `BotWPC` and the imported program is
+`U-King-v208.rpx`; the read-only `ListSummary` + `ExportFunctions` pass was
+re-run on 2026-10-18 with `MAXMEM=3G` and exported 97,365 functions.
+
 The helpers in [`tools/ghidra-scripts/`](../../tools/ghidra-scripts/) are
 generic (no game data): `ListSummary`, `ExportFunctions`,
 `DecompileMatch`, and `TuneAnalysis` (option tuning for headless runs).
@@ -83,20 +88,25 @@ Decompiler output and project databases stay local — never commit them.
 
 ## Platform constraints (important)
 
-- REA's **Ghidra provider on Windows is an experimental read-only "P0"
-  boundary limited to PE x86/x86-64 targets** — it does not admit our
-  PowerPC RPX.
-- REA's **PowerPC lane (ELF32 BE, `EM_PPC`) requires a Linux or macOS
-  host** with Ghidra. On Windows, deep PPC pseudocode analysis therefore
-  uses one of:
-  1. **Rizin via REA** (`execute-rizin-command`) — cross-platform static
-     disassembly, works today;
-  2. **Ghidra headless directly** (PowerPC support is in core Ghidra) with
-     our own import scripts;
-  3. a Linux/macOS workstation (not available on this machine; WSL is not
-     installed).
-- This is a REA limitation, not a Ghidra one: Ghidra itself analyzes
-  PowerPC on Windows without issue when driven directly.
+- **Measured on 2026-10-18** (v208, `U-King-v208.rpx`): REA accepts the
+  file's *identity* (`open_binary` → `format: "elf"`,
+  `architecture: "powerpc"`) but **every deep-analysis candidate provider
+  refuses it**: `ghidra` → `target_format_unsupported` ("Windows Ghidra P0
+  accepts native PE and explicitly selected raw 6502 targets only"),
+  `hopper` → `unsupported_host` + `architecture_unsupported`, `ida` →
+  `not_configured` + `architecture_unsupported`. There is no REA path to
+  deep analysis of the RPX on this workstation, and no Linux/macOS host is
+  available (WSL is not installed).
+- **The working path is direct Ghidra 12.1.4 headless** (PowerPC support is
+  in core Ghidra, no REA involved): a read-only pass on the local project
+  `BotWPC` opened `U-King-v208.rpx` as
+  `PowerPC:BE:32:Gekko_Broadway_Espresso`, `.text` =
+  `0x02000020`–`0x04347C2B`, and exported **97,365 functions** (CSV kept
+  locally under the git-ignored `build/audit/`). See the recipe above.
+- Stock rizin/objdump cannot consume the RPX directly (see the target
+  notes); `tools/rpxinfo` handles the structure and zlib sections locally.
+  REA remains useful for targets its providers do admit (PE/ELF x86 family,
+  archives, JavaScript, evidence-oriented capture).
 
 ## Working rules
 

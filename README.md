@@ -4,9 +4,14 @@ An open, **clean-room** research project studying *The Legend of Zelda: Breath
 of the Wild* — with the long-term goal of running it natively on PC.
 
 > **Status: Phase 2 — feasibility signed off (ADR-0002); prototype in
-> progress.** The analysis environment is in place (REA + Ghidra), the RPX
-> format is documented, and the prototype (`tools/ppcx` + `src/runtime`)
-> already translates and runs real functions from a contributor's own copy.
+> progress.** The analysis environment is in place (REA + direct Ghidra
+> headless), the RPX format is documented, and the prototype
+> (`tools/ppcx` + `src/runtime`) translates and runs real functions from a
+> contributor's own copy. The 2026-10-18 audit fixed PPC-001…PPC-013 and
+> re-verified them with a compiled differential harness. The 2026-10-19
+> follow-up adds the RPX load image (all allocated sections, `.bss`
+> zero-fill and 278,749 data relocations) with a runtime loader that
+> validates bounds, ordering and a payload checksum before mapping.
 > See [ROADMAP.md](ROADMAP.md).
 
 ## What this project is
@@ -60,7 +65,7 @@ Read the full policy: [DISCLAIMER.md](DISCLAIMER.md) and
 - [Stabilization/implementation plan](docs/architecture/implementation-plan.md)
 - [REA and direct Ghidra guidance](docs/reverse-engineering/rea-guidance.md)
 
-The current ~97% decoded-instruction coverage is **not** 97% behavioral correctness or game compatibility. The prototype does not boot a playable game; section loading, Cafe OS services, and GPU presentation are unfinished. Known PowerPC semantic defects must be verified and fixed before claiming first-light progress.
+The corrected decoder covers **99.9993%** of the module's words (9,248,451 of 9,248,515; no known-unsupported instructions, 64 unknown/data words), the audit defects are mutation-verified and the quantized paired-single loads/stores are differentially tested — coverage is still **not** behavioral correctness or game compatibility. The prototype does not boot a playable game; the section/data image now loads and maps under bounds/order/checksum checks, while checked pointer semantics, Cafe OS services and GPU presentation are unfinished (Phase 2B/2C of the implementation plan).
 
 ## Legal
 

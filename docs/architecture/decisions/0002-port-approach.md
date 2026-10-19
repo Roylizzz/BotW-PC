@@ -150,9 +150,10 @@ Evidence at decision time (the items previously listed as pending):
   end-to-end demo function against the HLE runtime
   ([2026-10-recompiler-prototype.md](../../research/2026-10-recompiler-prototype.md)).
 - **Hard spots:** indirect calls route through the runtime dispatcher, tail
-  calls and ADDR16 import addresses are handled, the remaining opcode gaps
-  are small and enumerated (`psq_l`/`psq_st`), and big-endian memory plus
-  single-threaded reservations are modelled in the runtime.
+  calls and ADDR16 import addresses are handled, the enumerated opcode gap
+  (`psq_l`/`psq_st` and the indexed forms) is implemented and differentially
+  tested (2026-10-19), and big-endian memory plus single-threaded
+  reservations are modelled in the runtime.
 
 ## Consequences
 

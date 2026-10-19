@@ -12,8 +12,8 @@
  *     has no translation, a target with no registered function, or a guest
  *     trap instruction (tw).
  *
- * The operating system is not modelled yet: every HLE call is counted and
- * returns with the CPU untouched. `PPCX_HLE_TRACE=1` logs each call and
+ * A minimal coreinit identity HLE registry is modeled. Other imports are
+ * counted and left untouched in diagnostic mode; strict mode rejects them. `PPCX_HLE_TRACE=1` logs each call and
  * `PPCX_HLE_STRICT=1` aborts on the first one. `PPCX_DISPATCH_TRACE=1` logs
  * every control transfer that goes through the runtime dispatcher, which
  * makes it possible to find the last translated function executed before a
@@ -30,13 +30,15 @@
 #include <string.h>
 
 #include "ppcx_abi.h"
+#include "ppcx_image.h"
+#include "ppcx_hle.h"
 #include "ppcx_runtime.h"
 
 /*
  * The RPX is linked for addresses up to ~0xC1xxxxxx (the import slots sit
- * at 0xC0000000), so one arena covers the whole guest address space.
+ * at 0xC0000000), so one arena covers the whole guest address space
+ * (PPCX_ARENA_BYTES, shared with the image loader in ppcx_abi.h).
  */
-#define PPCX_ARENA_BYTES 0xC2000000u
 
 /*
  * Address-taken imports get pseudo-addresses in a region no RPX section
@@ -222,17 +224,24 @@ void ppcx_call_unknown(Cpu *c, u32 target) {
 void ppcx_hle_call(Cpu *c, u32 import_index) {
     const char *name = ppcx_import_name(import_index);
     g_hle_calls++;
+    if (ppcx_hle_dispatch_named(c, name)) {
+        if (g_trace) {
+            fprintf(stderr, "ppcx: HLE modeled #%u: %s (import %u), r3=0x%08X\n",
+                    g_hle_calls, name, (unsigned)import_index, (unsigned)c->gpr[3]);
+        }
+        return;
+    }
     if (g_strict) {
-        fprintf(stderr, "ppcx: HLE call to %s (import %u) in strict mode\n",
+        fprintf(stderr, "ppcx: unimplemented HLE: %s (import %u) in strict mode\n",
                 name, (unsigned)import_index);
         ppcx_dump_state(c);
         exit(5);
     }
     if (g_trace) {
-        fprintf(stderr, "ppcx: HLE call #%u: %s (import %u)\n",
+        fprintf(stderr, "ppcx: HLE unimplemented #%u: %s (import %u) [diagnostic no-op]\n",
                 g_hle_calls, name, (unsigned)import_index);
     }
-    /* No model implemented yet: the call returns with the CPU untouched. */
+    /* Diagnostic compatibility only: unknown services do NOT work. */
 }
 
 u32 ppcx_import_addr(u32 import_index) {
@@ -245,13 +254,37 @@ unsigned ppcx_hle_call_count(void) {
 
 int ppcx_run(void) {
     Cpu cpu;
+    const char *image;
     ppcx_runtime_init();
     memset(&cpu, 0, sizeof(cpu));
+    /*
+     * Optional RPX load image (build/ppcx/image.bin, written by
+     * `tools/ppcx image`): maps .rodata/.data/.bss so translated code can
+     * read the game's own globals. Without PPCX_IMAGE the arena stays
+     * empty, which is only enough for functions that touch no data.
+     */
+    image = getenv("PPCX_IMAGE");
+    if (image != NULL && image[0] != '\0') {
+        PpcxImageReport report;
+        char err[256];
+        long rc = ppcx_image_load_file(image, &report, err, sizeof err);
+        if (rc != 0) {
+            fprintf(stderr, "ppcx: image load failed (%ld): %s\n", rc, err);
+            return 8;
+        }
+        fprintf(stderr, "ppcx: image %s mapped: %u segment(s), %llu bytes (%u BSS)\n",
+                image, (unsigned)report.segments,
+                (unsigned long long)report.bytes, (unsigned)report.bss_segments);
+    }
+    /* Modelled boot state: the system software leaves the quantized
+     * load/store unit enabled (the shipped game code never writes HID2 and
+     * still executes psq_* instructions, so LSQE must already be set). */
+    cpu.hid2 = PPCX_HID2_LSQE;
     cpu.gpr[1] = PPCX_INITIAL_STACK;
     fprintf(stderr, "ppcx: entry 0x%08X, %u translated function(s)\n",
             (unsigned)ppcx_entry, ppcx_function_count);
     ppcx_dispatch(&cpu, ppcx_entry);
     fprintf(stderr, "ppcx: entry returned, r3 = 0x%08X\n", (unsigned)cpu.gpr[3]);
-    fprintf(stderr, "ppcx: HLE calls: %u (no models implemented yet)\n", g_hle_calls);
+    fprintf(stderr, "ppcx: HLE calls: %u (unimplemented services remain)\n", g_hle_calls);
     return 0;
 }

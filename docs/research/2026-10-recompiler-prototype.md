@@ -39,13 +39,13 @@ first GX2 frame?
      this execution model because every register lives in one shared `Cpu`.
    - Translation ranges use the union of both sets: **200,900 starts**.
 
-3. **Instruction coverage** (9,248,515 words): **97.00% supported**,
-   2.96% known-but-unsupported, 0.04% unknown/data. The unsupported mass is
-   concentrated: `psq_l` 118,005, `psq_st` 93,411, `lmw` 33,884, `stmw`
-   21,568, `frsqrte` 4,538, `ps_rsqrte` 1,238, `ps_res` 686, `fres` 65,
-   `tw` 135, plus a thin tail of unallocated `op31` XOs. Implementing the
-   paired-single memory ops, the block moves and the estimate family lifts
-   coverage above 99.9%.
+3. **Instruction coverage** (9,248,515 words): **99.9993% supported**
+   (9,248,451), no known-unsupported instructions, 0.0007% unknown/data
+   (64: `invalid-0` 47, `op31-xo375` 11, `op0` 6). Re-measured on
+   2026-10-19 after implementing the quantized paired-single loads/stores,
+   the last known-unsupported block (`psq_l` 118,005 + `psq_st` 93,411 =
+   211,416 words in this module). Earlier snapshots: 97.71% / 2.29% / 0.00%
+   (post-audit) and 97.00% / 2.96% / 0.04% (pre-fix).
 
 4. **Import model validated on the real module.** 445 slots (437 functions,
    8 data). 16,682 REL24 sites split into **16,522 `bl` calls and 160 `b`
@@ -91,9 +91,53 @@ first GX2 frame?
    with an address + register dump. `PPCX_HLE_TRACE=1` logs every HLE call,
    `PPCX_HLE_STRICT=1` aborts on the first.
 
+8. **Audit correction pass (2026-10-18).** An independent source audit fixed
+   thirteen semantic defects in the runtime ABI, the decoder and the
+   translator (PPC-001…PPC-013: rotate mask, `lswi`/`stswi` group advance,
+   `bcl` link handling, CR0 only on Rc, `mulli` sign, `cmpli`
+   zero-extension, r0-as-literal in `addic`/`subfic`/`cmpi`/`cmpli`,
+   `lwsync` codegen, `neg` carry, OE=1 decoding, divide edge cases, OE
+   operand aliasing, `nego` overflow). Verification: 185 compiled synthetic
+   programs compared against an independent oracle (221 today, including the
+   paired-single cases below), every fix re-introduced as a mutation and
+   caught (10/10), 94 automated tests green at the time (97 today), and the
+   coverage table above re-measured. v208 itself contains no OE=1
+   instruction, no `bcl` with LK and no `lwsync`, so those defects were
+   latent in this title; the rotate-mask fix still affects 194,957
+   instructions the module executes. See
+   [the audit](../audits/2026-10-18-code-audit.md).
+
+9. **Quantized paired-single load/store (2026-10-19).** The last
+   known-unsupported block is implemented: `psq_l`/`psq_lu`/`psq_st`/
+   `psq_stu` and the indexed `psq_lx`/`psq_stx`/`psq_lux`/`psq_stux` decode,
+   translate and execute. GQR0–7 (SPR 912–919) and HID2 (SPR 920, `LSQE`)
+   are part of `Cpu`; loads dequantize with `2^-scale`, stores quantize with
+   `2^scale`, clamp to the type range and truncate toward zero, and float
+   stores follow the reference flush-to-zero rule for single-subnormal
+   results. Since v208 never writes HID2 or the GQRs but executes 211,416
+   `psq_*` instructions, the model boots with `LSQE=1` and all-zero GQRs
+   (float quantization) — a documented assumption, not an observation.
+   The differential harness grew to 221 compiled programs / 907 state
+   lines: it now compares raw-bit FPR lanes plus the GQR/HID2 state on every
+   case and includes 36 new paired-single cases (all quantize types, both
+   scale signs, paired and unpaired `W` forms, indexed addressing, update
+   forms, clamping, truncation and FTZ corners). See
+   [the audit](../audits/2026-10-18-code-audit.md).
+
+   The compiled loader harness (`tests/loader`) covers the load image the
+   same way: a synthetic RPX with relocated `.rodata`/`.data`, zero-filled
+   `.bss`, ten corrupted-blob classes (bad magic/count/table size, empty
+   segment, unknown flags, arena escape, overlap, payload escape, checksum)
+   and Fletcher-32 boundary probes; `node tests/loader/run.js` →
+   `loader: 50 state lines, 10 negative blobs … loader: OK`.
+
 ## Evidence quality
 
-- **Observed:** all metrics above, produced by our tools on our own copy;
+- **Observed:** all metrics above, produced by our tools on our own copy
+  (coverage re-measured 2026-10-19 after the paired-single implementation;
+  the 2026-10-18 audit checkpoint read 97.71%); the loader-image metrics
+  (31 segments, 43,155,811 bytes, 278,749 applied relocations, 6 deferred
+  TLS sites) come from an `image` run pinned to the recorded v208 SHA-256;
   the Ghidra census is a local comparison artifact only.
 - **Derived:** the interpretation of `.rodata` ADDR32 entries as code
   pointers (validated by sampling), and the tail-call reading of
@@ -104,9 +148,16 @@ first GX2 frame?
 
 ## Open questions / next steps towards a first GX2 frame
 
-- **Data image:** load `.rodata`/`.data`/`.bss` into the arena and apply
-  data relocations (table slots holding imports need `PPCX_IMPORT_ADDR`).
-  Nothing that walks a table can run before this exists.
+- **Data image:** implemented 2026-10-19 — `tools/ppcx image` validates and
+  serializes every allocated section of the module (31 sections,
+  43,155,811 bytes including the 1,399,469-byte `.bss`), applies the 278,749
+  `R_PPC_ADDR32` data relocations, leaves the 889,935 executable-section
+  relocations to the recompiler and defers the 6 TLS sites explicitly; the
+  runtime maps the blob with bounds/order/checksum checks
+  (`src/runtime/src/ppcx_image.c`). Data slots that point into import slots
+  are not observed in v208 and stay unmodelled. What remains for this item
+  is the *code* that walks the loaded tables (HLE tier 1 below), not the
+  image itself.
 - **HLE tier 1:** coreinit (`OSGetCoreId`, `OSMemoryBarrier`,
   `OSGetSystemTime`, `OSBlockMove/Set`, `memcpy`, `_iob`,
   `__gh_FOPEN_MAX`), then proc_ui/padscore stubs.
@@ -114,7 +165,8 @@ first GX2 frame?
   `FUN_02c5e5f4` → … → `FUN_0309bbb0`, the only `GX2Init` site at
   `0x0309BC80`) with dispatch tracing, then model GX2 calls as
   log-only no-ops and count frames before attempting any real rendering.
-- **Opcode gaps:** `psq_l`/`psq_st`, `lmw`/`stmw`, `fres`/`frsqrte`/
-  `ps_res`/`ps_rsqrte`, `tw`.
+- **Opcode gaps:** none left that the game executes. The remaining 64
+  unknown/data words (47 zero words, 11 `op31-xo375`, 6 `op0`) need a
+  manual review for false decodes or embedded data.
 - **Scale test:** a `--follow` stress run from the entry point to measure
   translation throughput and generated-code size for the full closure.

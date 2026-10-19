@@ -4,19 +4,19 @@
 
 ## Phase 2A — CPU correctness gate (P0)
 
-- [ ] Correct PPC-001..PPC-009 from [the code audit](../audits/2026-10-18-code-audit.md) with regression tests written first.
-- [ ] Build independent differential oracle for synthetic PowerPC sequences and compare GPR/FPR raw bits, CR, LR, CTR, XER, guest memory and traps.
-- [ ] Compile generated C in tests using the host C compiler; assert actual behavior beyond emitted text.
-- [ ] Run tests automatically across supported Windows/Linux host toolchains and reject unsupported machine-code features explicitly.
-- [ ] Publish metrics separately for decoded words, behaviorally verified instructions, compiled/reachable functions and actual HLE implementations.
+- [x] Correct PPC-001..PPC-013 from [the code audit](../audits/2026-10-18-code-audit.md) with regression tests written first (10/10 mutations detected — see the audit's fix verification results).
+- [ ] Build independent differential oracle for synthetic PowerPC sequences and compare GPR/FPR raw bits, CR, LR, CTR, XER, guest memory and traps. *(Implemented: the integer core and the quantized paired-single load/store path compare GPR/XER(OV/SO/CA)/CR/LR/CTR, raw-bit FPR lanes, GQR/HID2 and memory windows over 221 compiled programs; FP arithmetic and trap conditions remain open.)*
+- [x] Compile generated C in tests using the host C compiler; assert actual behavior beyond emitted text (TCC locally; the compiled-harness CI job is pending).
+- [ ] Run tests automatically across supported Windows/Linux host toolchains and reject unsupported machine-code features explicitly. *(Started: CI runs the JS suites on Linux with Node 22/24; the compiled harness runs locally; Windows verified locally; unsupported machine code stops with `PPCX_UNIMPL`.)*
+- [ ] Publish metrics separately for decoded words, behaviorally verified instructions, compiled/reachable functions and actual HLE implementations. *(Started: decoded-word coverage, the compiled harness and HLE stubs are reported separately; "verified" currently means harness coverage, not the whole module.)*
 
 **Exit:** all new synthetic regressions pass, original tests pass, and no known P0 semantics defect remains.
 
 ## Phase 2B — RPX loader, data relocations and Cafe OS
 
-- [ ] Identify supported v208 source by cryptographic digest and version manifest (local input only).
-- [ ] Map all allocated sections with validated ranges, .bss zero-fill, proper imports, relocations and data pointers.
-- [ ] Replace raw pointer handling with checked region/address semantics and deterministic guest exceptions.
+- [ ] Identify supported v208 source by cryptographic digest and version manifest (local input only). *(v208 SHA-256 recorded in [environment.md](../reverse-engineering/environment.md) and re-verified 2026-10-19 by an `image` run with the recorded digest; `ppcx image --expect-sha256 <digest>` pins it. Version manifest still open.)*
+- [ ] Map all allocated sections with validated ranges, .bss zero-fill, proper imports, relocations and data pointers. *(Implemented 2026-10-19 except documented deferrals: `node tools/ppcx/ppcx.js image --rpx …` validates 31 allocated sections of v208 (43,155,811 bytes including 1,399,469 of `.bss`), applies the 278,749 `R_PPC_ADDR32` data relocations, leaves 889,935 executable-section sites to the recompiler and records the 6 TLS (`DTPMOD32`/`DTPREL32`) sites explicitly; the runtime maps the blob under bounds/order/checksum checks. Synthetic golden fixtures plus 10 corrupted-blob classes in `tests/loader`. Data slots that point into import slots are not observed in v208 and stay unmodelled.)*
+- [ ] Replace raw pointer handling with checked region/address semantics and deterministic guest exceptions. *(Started: the image loader validates every section range, ordering and checksum before writing; the translated-code accessors (`ppcx_ptr`) stay unchecked — RUN-003.)*
 - [ ] Implement typed HLE registry with tested coreinit, proc_ui and minimum input/memory services; no silent success from unknown calls.
 - [ ] Add synthetic headless boot fixture and trace logs with stable checkpoints.
 

@@ -23,7 +23,10 @@ npx -y rea-agents@latest --help
 npx rea-agents@latest setup
 ```
 
-Windows notes: quote paths, e.g. `"D:/dumps/botw/content/..."`.
+Windows notes: quote paths, e.g. `"D:/dumps/botw/content/..."`. For a
+long-lived agent setup, install the package once and point the agent at the
+absolute `node.exe` + `rea-agents/scripts/rea.mjs` entry instead of
+re-running `npx` at every start (see [environment.md](environment.md)).
 
 ## Workflow
 

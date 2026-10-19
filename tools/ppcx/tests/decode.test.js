@@ -209,7 +209,53 @@ test("marks unsupported instructions without losing the name", () => {
     assert.equal(sc.supported, false);
     const psq = decode((56 << 26) | (1 << 21)); // psq_l f1, 0(r0), 0, 0
     assert.equal(psq.name, "psq_l");
-    assert.equal(psq.supported, false);
+    assert.equal(psq.supported, true);
+});
+
+test("decodes psq fields and the indexed forms", () => {
+    const d = decode((57 << 26) | (3 << 21) | (4 << 16) | (1 << 15) | (5 << 12) | ((-8) & 0xfff));
+    assert.equal(d.name, "psq_lu");
+    assert.equal(d.form, "PSQ");
+    assert.equal(d.kind, "load");
+    assert.equal(d.access, "psq");
+    assert.equal(d.frd, 3);
+    assert.equal(d.ra, 4);
+    assert.equal(d.w, 1);
+    assert.equal(d.i, 5);
+    assert.equal(d.disp, -8);
+    assert.equal(d.update, true);
+
+    const st = decode((60 << 26) | (2 << 21) | 0x123);
+    assert.equal(st.name, "psq_st");
+    assert.equal(st.kind, "store");
+    assert.equal(st.update, false);
+    assert.equal(st.disp, 0x123);
+
+    const lx = decode((4 << 26) | (7 << 21) | (8 << 16) | (9 << 11) | (1 << 10) | (2 << 7) | (38 << 1));
+    assert.equal(lx.name, "psq_lux");
+    assert.equal(lx.frd, 7);
+    assert.equal(lx.ra, 8);
+    assert.equal(lx.rb, 9);
+    assert.equal(lx.w, 1);
+    assert.equal(lx.i, 2);
+    assert.equal(lx.update, true);
+
+    const stx = decode((4 << 26) | (39 << 1));
+    assert.equal(stx.name, "psq_stux");
+    assert.equal(stx.kind, "store");
+    assert.equal(stx.update, true);
+
+    // The sub-opcode pivot never shadows the paired-single tables.
+    for (const sub6 of [6, 7, 38, 39]) {
+        for (let ix = 0; ix < 8; ix++) {
+            for (let wx = 0; wx < 2; wx++) {
+                const q = decode((4 << 26) | (wx << 10) | (ix << 7) | (sub6 << 1));
+                assert.ok(q.name.startsWith("psq_"), `${q.name} for sub6=${sub6} ix=${ix} wx=${wx}`);
+            }
+        }
+    }
+    assert.equal(decode((4 << 26) | (72 << 1)).name, "ps_mr");
+    assert.equal(decode((4 << 26) | (21 << 1)).name, "ps_add");
 });
 
 test("decodes mtcrf fields", () => {
@@ -305,4 +351,62 @@ test("fres lives in opcode 59 and the estimate ops are supported", () => {
     const ps = decode((4 << 26) | (1 << 21) | (2 << 11) | (24 << 1));
     assert.equal(ps.name, "ps_res");
     assert.equal(ps.supported, true);
+});
+
+test("decodes the signed mulli immediate", () => {
+    const d = decode(0x1c64ffff); // mulli r3, r4, 0xffff
+    assert.equal(d.name, "mulli");
+    assert.equal(d.imm, -1);
+    assert.equal(d.uimm, 0xffff);
+});
+
+test("cmpli and cmpi keep both immediate views", () => {
+    const l = decode(0x2803ffff); // cmpli cr0, r3, 0xffff
+    assert.equal(l.name, "cmpli");
+    assert.equal(l.uimm, 0xffff);
+    assert.equal(l.imm, -1);
+    const i = decode(0x2c03ffff); // cmpi cr0, r3, -1
+    assert.equal(i.name, "cmpi");
+    assert.equal(i.imm, -1);
+});
+
+test("bc carries the link bit", () => {
+    const d = decode(0x40820021); // bcl 4, 2, +32
+    assert.equal(d.branch, "bc");
+    assert.equal(d.name, "bcl");
+    assert.equal(d.lk, true);
+    assert.equal(d.bd, 32);
+});
+
+test("the OE field is only reported for real XO-form instructions", () => {
+    // Bit 10 belongs to the extended opcode of X-form instructions: srw (536)
+    // and extsb (954) both have it set and must not report an OE field.
+    const srw = decode((31 << 26) | (1 << 21) | (2 << 16) | (3 << 11) | (536 << 1));
+    assert.equal(srw.name, "srw");
+    assert.equal(srw.oe, undefined);
+    assert.equal(srw.form, "X");
+    const extsb = decode((31 << 26) | (4 << 21) | (3 << 16) | (954 << 1));
+    assert.equal(extsb.name, "extsb");
+    assert.equal(extsb.oe, undefined);
+    const add = decode((31 << 26) | (3 << 21) | (3 << 16) | (4 << 11) | (266 << 1));
+    assert.equal(add.oe, false);
+    assert.equal(add.form, "XO");
+});
+
+test("XO-form instructions with OE = 1 decode instead of trapping", () => {
+    // addo r3, r3, r4: bit 10 is OE, so the 10-bit field reads 778, not 266.
+    const d = decode(0x7c632614);
+    assert.equal(d.name, "add");
+    assert.equal(d.oe, true);
+    assert.equal(d.rt, 3);
+    assert.equal(d.ra, 3);
+    assert.equal(d.rb, 4);
+    const mullwo = decode((31 << 26) | (3 << 21) | (3 << 16) | (4 << 11) | (235 << 1) | (1 << 10));
+    assert.equal(mullwo.name, "mullw");
+    assert.equal(mullwo.oe, true);
+    // mulhw has no OE field: an OE=1 encoding stays undecoded rather than
+    // silently becoming a different instruction.
+    const bad = decode((31 << 26) | (3 << 21) | (3 << 16) | (4 << 11) | (75 << 1) | (1 << 10));
+    assert.equal(bad.supported, false);
+    assert.equal(bad.name, "op31-xo587");
 });
