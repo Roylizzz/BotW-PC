@@ -146,7 +146,7 @@ deferred (see *Load image*).
 ```sh
 cd tools/ppcx && npm test                                       # 96 decoder/translator/image cases
 # from the repository root: compiled harnesses (need a C compiler)
-node --test "tests/isa/*.test.js" "tests/loader/*.test.js" "tools/ppcx/tests/*.test.js"
+node --test "tests/isa/*.test.js" "tests/loader/*.test.js" "tests/mem/*.test.js" "tools/ppcx/tests/*.test.js"
 ```
 
 The harness (`tests/isa`) translates 221 synthetic guest programs, compiles
@@ -157,10 +157,19 @@ audit proved every fixed defect by re-introducing it and watching the harness
 fail (10/10 detected).
 
 The loader harness (`tests/loader`) builds a synthetic load image with the
-real `lib/image.js`, compiles `src/runtime/src/ppcx_image.c` together with a
-generated driver and compares the mapped bytes, the report counters, ten
-corrupted-blob error codes and Fletcher-32 boundary probes against
+real `lib/image.js`, compiles `src/runtime/src/ppcx_image.c` and
+`src/runtime/src/ppcx_mem.c` together with a generated driver and compares
+the mapped bytes, the report counters, ten corrupted-blob error codes,
+Fletcher-32 boundary probes and the registered-region counters against
 fixture-authored expectations (`node tests/loader/run.js` → `loader: OK`).
+
+The checked-memory harness (`tests/mem`) compiles the real
+`src/runtime/src/ppcx_mem.c` with a generated driver and verifies the region
+model through the guest accessors: raw mode without a model, region
+registration and boundary/unaligned/host accesses, nine illegal accesses
+each failing in its own process with exit code 9 and an exact diagnostic,
+the fault hook and run-to-run determinism (`node tests/mem/run.js` →
+`mem: OK`).
 
 All tests use only synthetic instruction sequences, synthetic import tables
 and synthetic RPX fixtures; no game data is required.

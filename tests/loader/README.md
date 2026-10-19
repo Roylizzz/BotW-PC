@@ -19,22 +19,27 @@ is synthetic: the RPX fixture is authored byte by byte in
 3. generates one C driver that runs `ppcx_image_load_memory` /
    `ppcx_image_load_file` over the blob and the variants, prints the mapped
    words, the report counters and every error code, and probes the
-   Fletcher-32 implementation at the 359-byte block boundary;
-4. compiles the driver together with `src/runtime/src/ppcx_image.c` using a
-   real host compiler (shared discovery: `PPCX_CC`, then
-   `cc`/`gcc`/`clang`/`tcc`) and compares the output against expectations
-   authored in the fixture.
+   Fletcher-32 implementation at the 359-byte block boundary; after the
+   negative blobs it installs the checked memory model
+   (`ppcx_mem_reset`), so the mapping, the segment registration and every
+   probe of the valid blob run through the checked accessors;
+4. compiles the driver together with `src/runtime/src/ppcx_image.c` and
+   `src/runtime/src/ppcx_mem.c` using a real host compiler (shared
+   discovery: `PPCX_CC`, then `cc`/`gcc`/`clang`/`tcc`) and compares the
+   output against expectations authored in the fixture.
 
 Expected output:
 
 ```
-loader: 50 state lines, 10 negative blobs, compiled with <compiler>
+loader: 54 state lines, 10 negative blobs, compiled with <compiler>
 loader: OK, the compiled loader matches the synthetic expectations
 ```
 
 Negative cases must fail with their documented code **before** anything is
 written; the harness checks that a sentinel word survives every rejected
-blob.
+blob. The region counters must show one region (the stack) before the first
+load, `1 + segments` after it, and the same value after the second load of
+the same blob (re-registration is idempotent).
 
 ```sh
 node tests/loader/run.js                      # CLI, exits non-zero on mismatch

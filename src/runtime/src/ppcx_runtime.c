@@ -3,6 +3,10 @@
  *
  * What this iteration does:
  *   - allocates one flat arena covering the whole guest address space;
+ *   - models guest memory as a region map (ppcx_mem.c): the stack plus
+ *     every loaded image segment; once installed (ppcx_run), any access
+ *     outside every region stops with a diagnostic and exit code 9
+ *     instead of silently reading or writing unrelated arena bytes;
  *   - resolves guest addresses to translated functions by binary search
  *     over the generated registry;
  *   - gives address-taken imports stable pseudo-addresses in a reserved
@@ -12,15 +16,17 @@
  *     has no translation, a target with no registered function, or a guest
  *     trap instruction (tw).
  *
- * A minimal coreinit identity HLE registry is modeled. Other imports are
- * counted and left untouched in diagnostic mode; strict mode rejects them. `PPCX_HLE_TRACE=1` logs each call and
- * `PPCX_HLE_STRICT=1` aborts on the first one. `PPCX_DISPATCH_TRACE=1` logs
- * every control transfer that goes through the runtime dispatcher, which
- * makes it possible to find the last translated function executed before a
- * crash. `PPCX_FN_TRACE=1` prints every translated-function entry (the
- * generated code must be built with ppcx_trace_enter calls) and
- * `PPCX_CRASH_TRACE=1` installs a Windows crash handler that dumps the event
- * ring of recent entries when the host takes an access violation.
+ * A minimal coreinit identity HLE registry is modeled (ppcx_hle.c); other
+ * imports are counted and left untouched in diagnostic mode, and strict
+ * mode rejects them. `PPCX_HLE_TRACE=1` logs each call and
+ * `PPCX_HLE_STRICT=1` aborts on the first unimplemented one.
+ * `PPCX_DISPATCH_TRACE=1` logs every control transfer that goes through the
+ * runtime dispatcher, which makes it possible to find the last translated
+ * function executed before a crash. `PPCX_FN_TRACE=1` prints every
+ * translated-function entry (the generated code must be built with
+ * ppcx_trace_enter calls) and `PPCX_CRASH_TRACE=1` installs a Windows crash
+ * handler that dumps the event ring of recent entries when the host takes an
+ * access violation.
  *
  * This code is original to the BotW-PC project and licensed under MIT.
  */
@@ -30,8 +36,9 @@
 #include <string.h>
 
 #include "ppcx_abi.h"
-#include "ppcx_image.h"
 #include "ppcx_hle.h"
+#include "ppcx_image.h"
+#include "ppcx_mem.h"
 #include "ppcx_runtime.h"
 
 /*
@@ -49,8 +56,10 @@
 #define PPCX_HLE_TRAMPOLINE_STRIDE 8u
 #define PPCX_HLE_TRAMPOLINE_RANGE (0x10000u * PPCX_HLE_TRAMPOLINE_STRIDE)
 
-/* Initial guest stack pointer for ad-hoc entry points. */
+/* Initial guest stack pointer for ad-hoc entry points, and the size of the
+ * checked stack region mapped below it. */
 #define PPCX_INITIAL_STACK 0x10000000u
+#define PPCX_STACK_BYTES 0x00100000u
 
 u8 *ppcx_memory = NULL;
 
@@ -182,7 +191,23 @@ static void ppcx_dump_state(const Cpu *c) {
             (unsigned)c->lr, (unsigned)c->ctr);
 }
 
+/*
+ * Checked-memory fault hook: ppcx_mem.c prints the deterministic diagnostic
+ * and then calls this to add the current register context before exiting.
+ */
+static const Cpu *g_fault_cpu;
+
+static void ppcx_mem_fault_dump(u32 ea, unsigned size, unsigned write) {
+    (void)ea;
+    (void)size;
+    (void)write;
+    if (g_fault_cpu != NULL) {
+        ppcx_dump_state(g_fault_cpu);
+    }
+}
+
 void ppcx_dispatch(Cpu *c, u32 target) {
+    g_fault_cpu = c;
     if (g_dispatch_trace) {
         fprintf(stderr, "ppcx: dispatch 0x%08X\n", (unsigned)target);
     }
@@ -257,6 +282,16 @@ int ppcx_run(void) {
     const char *image;
     ppcx_runtime_init();
     memset(&cpu, 0, sizeof(cpu));
+    /*
+     * Install the checked guest-memory model before anything runs: the
+     * stack region is mapped here and the image loader registers every
+     * segment it maps. Without PPCX_IMAGE any data access faults
+     * deterministically (exit code 9, see ppcx_mem.h) instead of reading
+     * unrelated zero bytes.
+     */
+    g_fault_cpu = &cpu;
+    ppcx_mem_set_fault_hook(ppcx_mem_fault_dump);
+    ppcx_mem_reset(PPCX_INITIAL_STACK, PPCX_STACK_BYTES);
     /*
      * Optional RPX load image (build/ppcx/image.bin, written by
      * `tools/ppcx image`): maps .rodata/.data/.bss so translated code can

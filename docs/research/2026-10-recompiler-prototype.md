@@ -21,7 +21,7 @@ first GX2 frame?
    `ppcx analyze` (boundaries + opcode coverage, cached) →
    `ppcx imports` (REL24/ADDR16 map) → `ppcx translate` (BFS over callees,
    emits one C function per guest function) → TCC → `src/runtime`
-   (flat arena, dispatcher, HLE entry points). Analysis of the whole
+   (region-checked arena, dispatcher, HLE entry points). Analysis of the whole
    module takes **~2.3 s**; nothing derived from the game is committed
    (generated C goes to the git-ignored `build/`).
 
@@ -158,6 +158,17 @@ first GX2 frame?
   are not observed in v208 and stay unmodelled. What remains for this item
   is the *code* that walks the loaded tables (HLE tier 1 below), not the
   image itself.
+- **Checked guest memory:** implemented 2026-10-19 (RUN-003) — `ppcx_run`
+  installs a region map (1 MiB of stack plus every loaded segment) and all
+  guest accessors require an access to fall entirely inside one region;
+  anything else prints one deterministic diagnostic plus the register
+  context and exits with code 9 (`src/runtime/src/ppcx_mem.c`; compiled
+  harness in `tests/mem`, checked probes of the relocated synthetic image
+  in `tests/loader`). Per-section permissions stay open: every mapped
+  region is read/write until the blob carries the ELF section flags. The
+  next evidence to gather is a translated data-reading function running
+  against the real image, so that any unmodelled address (heap, MMIO,
+  import trampolines) faults loudly instead of returning zeroes.
 - **HLE tier 1:** coreinit (`OSGetCoreId`, `OSMemoryBarrier`,
   `OSGetSystemTime`, `OSBlockMove/Set`, `memcpy`, `_iob`,
   `__gh_FOPEN_MAX`), then proc_ui/padscore stubs.

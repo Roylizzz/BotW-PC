@@ -101,27 +101,42 @@ typedef struct Cpu {
  * Guest memory is a flat 32-bit address space. The runtime allocates the
  * arena once (see ppcx_runtime_init) so that guest addresses stay exactly
  * the addresses the game was linked for.
+ *
+ * Every accessor goes through the checked path: once the runtime installs a
+ * region map (ppcx_mem_reset, see ppcx_mem.h) an access that does not fall
+ * entirely inside one mapped region fails deterministically (diagnostic on
+ * stderr, exit code 9) instead of silently touching unrelated arena bytes.
+ * Harnesses that never install a map keep the raw flat-address behavior.
  */
 extern u8 *ppcx_memory;
+
+/* Region-map state, implemented in ppcx_mem.c (see ppcx_mem.h). */
+extern int ppcx_mem_active;
+void ppcx_mem_check(u32 ea, unsigned size, unsigned write);
 
 static inline u8 *ppcx_ptr(u32 ea) {
     return ppcx_memory + (size_t)ea;
 }
 
+static inline u8 *ppcx_ptr_checked(u32 ea, unsigned size, unsigned write) {
+    if (ppcx_mem_active) ppcx_mem_check(ea, size, write);
+    return ppcx_memory + (size_t)ea;
+}
+
 static inline u32 ppcx_rd32(u32 ea) {
-    const u8 *p = ppcx_ptr(ea);
+    const u8 *p = ppcx_ptr_checked(ea, 4, 0);
     return ((u32)p[0] << 24) | ((u32)p[1] << 16) | ((u32)p[2] << 8) | (u32)p[3];
 }
 
 static inline u16 ppcx_rd16(u32 ea) {
-    const u8 *p = ppcx_ptr(ea);
+    const u8 *p = ppcx_ptr_checked(ea, 2, 0);
     return (u16)(((u32)p[0] << 8) | (u32)p[1]);
 }
 
-static inline u8 ppcx_rd8(u32 ea) { return *ppcx_ptr(ea); }
+static inline u8 ppcx_rd8(u32 ea) { return *ppcx_ptr_checked(ea, 1, 0); }
 
 static inline void ppcx_wr32(u32 ea, u32 v) {
-    u8 *p = ppcx_ptr(ea);
+    u8 *p = ppcx_ptr_checked(ea, 4, 1);
     p[0] = (u8)(v >> 24);
     p[1] = (u8)(v >> 16);
     p[2] = (u8)(v >> 8);
@@ -129,30 +144,30 @@ static inline void ppcx_wr32(u32 ea, u32 v) {
 }
 
 static inline void ppcx_wr16(u32 ea, u16 v) {
-    u8 *p = ppcx_ptr(ea);
+    u8 *p = ppcx_ptr_checked(ea, 2, 1);
     p[0] = (u8)(v >> 8);
     p[1] = (u8)v;
 }
 
-static inline void ppcx_wr8(u32 ea, u8 v) { *ppcx_ptr(ea) = v; }
+static inline void ppcx_wr8(u32 ea, u8 v) { *ppcx_ptr_checked(ea, 1, 1) = v; }
 
 static inline u64 ppcx_rd64(u32 ea) {
-    const u8 *p = ppcx_ptr(ea);
+    const u8 *p = ppcx_ptr_checked(ea, 8, 0);
     u64 v = 0;
     for (int i = 0; i < 8; i++) v = (v << 8) | p[i];
     return v;
 }
 
 static inline void ppcx_wr64(u32 ea, u64 v) {
-    u8 *p = ppcx_ptr(ea);
+    u8 *p = ppcx_ptr_checked(ea, 8, 1);
     for (int i = 0; i < 8; i++) p[7 - i] = (u8)(v >> (8 * i));
 }
 
 /* Byte-reversed loads/stores (lwbrx family) read/write host order. */
-static inline u32 ppcx_rd32_host(u32 ea) { return *(const u32 *)(const void *)ppcx_ptr(ea); }
-static inline u16 ppcx_rd16_host(u32 ea) { return *(const u16 *)(const void *)ppcx_ptr(ea); }
-static inline void ppcx_wr32_host(u32 ea, u32 v) { *(u32 *)(void *)ppcx_ptr(ea) = v; }
-static inline void ppcx_wr16_host(u32 ea, u16 v) { *(u16 *)(void *)ppcx_ptr(ea) = v; }
+static inline u32 ppcx_rd32_host(u32 ea) { return *(const u32 *)(const void *)ppcx_ptr_checked(ea, 4, 0); }
+static inline u16 ppcx_rd16_host(u32 ea) { return *(const u16 *)(const void *)ppcx_ptr_checked(ea, 2, 0); }
+static inline void ppcx_wr32_host(u32 ea, u32 v) { *(u32 *)(void *)ppcx_ptr_checked(ea, 4, 1) = v; }
+static inline void ppcx_wr16_host(u32 ea, u16 v) { *(u16 *)(void *)ppcx_ptr_checked(ea, 2, 1) = v; }
 
 /*
  * Multiple-register load/store (lmw/stmw). The effective address is passed
@@ -915,7 +930,7 @@ static inline void ppcx_psq_st(Cpu *c, u32 ea, u32 i, u32 w, u32 frs, u32 addr) 
 #endif
 
 static inline void ppcx_dcbz(u32 ea) {
-    u8 *p = ppcx_ptr(ea & ~31u);
+    u8 *p = ppcx_ptr_checked(ea & ~31u, 32, 1);
     for (int i = 0; i < 32; i++) p[i] = 0;
 }
 

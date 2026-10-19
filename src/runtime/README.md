@@ -11,6 +11,10 @@ It provides:
   data relocations applied, `.bss` zero-filled — into the arena after
   validating structure, segment order, guest-arena bounds and the payload
   checksum, so a rejected blob never leaves a partial image behind,
+* the checked guest-memory model (`src/runtime/src/ppcx_mem.c`): a region
+  map (stack plus every loaded segment) behind all guest accessors; an
+  access outside every region stops with a diagnostic and exit code 9
+  instead of silently reading or writing unrelated arena bytes,
 * the function registry and its dispatcher (`ppcx_dispatch`),
 * diagnostics with full register context for untranslated instructions and
   unregistered targets,
@@ -32,7 +36,8 @@ node tools/ppcx/ppcx.js image --rpx <your U-King-v208.rpx> --out build/ppcx
 
 # 3. compile with the local TCC
 tcc -I src/runtime/include -DPPCX_NO_FMA `
-    src/runtime/src/ppcx_runtime.c src/runtime/src/ppcx_image.c src/runtime/src/ppcx_hle.c `
+    src/runtime/src/ppcx_runtime.c src/runtime/src/ppcx_mem.c `
+    src/runtime/src/ppcx_hle.c src/runtime/src/ppcx_image.c `
     src/runtime/src/main.c build/ppcx/gen.c -o build/ppcx/ppcx.exe
 
 # 4. run (maps the image when PPCX_IMAGE points at it)
@@ -53,6 +58,30 @@ prototype.
 * `PPCX_HLE_TRACE=1` – log every emulated system call,
 * `PPCX_HLE_STRICT=1` – abort on the first **unimplemented** system call; implemented core identity calls remain available.
 
+## Checked guest memory (exit code 9)
+
+`ppcx_run` installs the checked memory model before the entry point:
+`ppcx_mem_reset` activates it with the stack mapped (`PPCX_INITIAL_STACK`
+down 1 MiB), and the image loader registers every segment of a
+`PPCX_IMAGE` blob as a region. From then on every guest access made by
+translated code (plain, byte-reversed, string/multiple-register helpers and
+`dcbz`) must fall **entirely inside one region**; anything else prints
+
+```
+ppcx: guest memory fault: read of 4 byte(s) at 0x00020000 is not inside any mapped region
+```
+
+followed by the register context and terminates with exit code 9. Without
+`PPCX_IMAGE` only the stack is mapped, so a function that reads data faults
+loudly instead of reading unrelated zero bytes. Regions currently carry no
+permissions: every mapped region is readable and writable (per-section
+write protection needs the ELF section flags in the blob, a later step).
+
+Harnesses that never call `ppcx_mem_reset` (the ISA oracle harness) keep the
+raw flat-address behavior; the compiled checked-memory tests live in
+`tests/mem` and the loader harness in `tests/loader` proves that a loaded
+image is exactly the registered region set.
+
 ## Loader error codes
 
 `ppcx_image_load_file` / `ppcx_image_load_memory` return 0 on success and
@@ -69,11 +98,16 @@ write a one-line diagnostic otherwise:
 | -7 | a segment payload runs past the end of the blob |
 | -8 | payload checksum (Fletcher-32) mismatch |
 | -9 | file I/O error |
+| -10 | a segment overlaps a live region or the region table is full (checked model active) |
 
-Every check runs before the first byte is written. The compiled harness in
-`tests/loader` covers the format, the checks and the Fletcher-32 boundaries
-against the tool that writes blobs; `tools/ppcx/README.md` documents how the
-image is built.
+Every check runs before the first byte is written, and segment registration
+runs before the mapping loop, so a rejected blob never leaves a partial
+image in the arena. On -10 the map may already contain the segments
+registered before the failing one; the caller is expected to abort the load
+(the runtime exits with code 8). The compiled harness in `tests/loader`
+covers the format, the checks and the Fletcher-32 boundaries against the
+tool that writes blobs; `tools/ppcx/README.md` documents how the image is
+built.
 
 ## Implemented HLE subset (synthetic tests)
 

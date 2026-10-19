@@ -31,6 +31,7 @@ const oracle = require("./oracle.js");
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const RUNTIME_INCLUDE = path.join(REPO_ROOT, "src", "runtime", "include");
+const RUNTIME_MEM_SRC = path.join(REPO_ROOT, "src", "runtime", "src", "ppcx_mem.c");
 
 const PROG_BASE = 0x00010000;
 const PROG_STRIDE = 0x100;
@@ -199,7 +200,11 @@ function compileAndRun(source, compiler, workDir) {
 
     const args = [];
     if (!/(^|[\\/])tcc(\.exe)?$/i.test(compiler)) args.push("-std=c11", "-O0", "-Wall");
-    args.push("-I", RUNTIME_INCLUDE, "-o", exePath, srcPath, "-lm");
+    /*
+     * The accessors always call into the checked-memory module; this harness
+     * never installs a region map, so the accesses stay raw (flat arena).
+     */
+    args.push("-I", RUNTIME_INCLUDE, "-o", exePath, RUNTIME_MEM_SRC, srcPath, "-lm");
     let r = spawnSync(compiler, args, { encoding: "utf8" });
     if (r.status !== 0) {
         // Some toolchains (TCC on Windows) link without a separate libm.
