@@ -62,7 +62,7 @@ Read the full policy: [DISCLAIMER.md](DISCLAIMER.md) and
 - [Stabilization/implementation plan](docs/architecture/implementation-plan.md)
 - [REA and direct Ghidra guidance](docs/reverse-engineering/rea-guidance.md)
 
-The corrected decoder covers **97.71%** of the module's words (2.29% known-unsupported paired-single ops, 64 unknown) and the fixed integer semantics are mutation-verified — coverage is still **not** behavioral correctness or game compatibility. The prototype does not boot a playable game; section loading, Cafe OS services, and GPU presentation are unfinished (Phase 2B/2C of the implementation plan).
+The corrected decoder covers **99.9993%** of the module's words (9,248,451 of 9,248,515; no known-unsupported instructions, 64 unknown/data words), the audit defects are mutation-verified and the quantized paired-single loads/stores are differentially tested — coverage is still **not** behavioral correctness or game compatibility. The prototype does not boot a playable game; section loading, Cafe OS services, and GPU presentation are unfinished (Phase 2B/2C of the implementation plan).
 
 ## Legal
 

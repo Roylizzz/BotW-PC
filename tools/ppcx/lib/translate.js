@@ -222,6 +222,28 @@ function translateFunction(opts) {
         }
     }
 
+    /* Quantized paired-single load/store: the GQR-driven conversion lives in
+     * the runtime helpers; the translator only computes the effective address
+     * and, for the update forms, the rA write-back. */
+    function emitPsq(ins) {
+        const fn = ins.kind === "load" ? "ppcx_psq_l" : "ppcx_psq_st";
+        const args = `${ins.i}u, ${ins.w}u, ${ins.frd}u, ${addrHex(ins.addr)}`;
+        const ea =
+            ins.form === "PSQ"
+                ? ins.update || ins.ra !== 0
+                    ? `(u32)(${g(ins.ra)} + ${u32hex(ins.disp)})`
+                    : u32hex(ins.disp)
+                : xEA(ins);
+        if (!ins.update) {
+            emit(`${fn}(c, ${ea}, ${args});`);
+            return;
+        }
+        emit(`ea = ${ea};`);
+        if (ins.kind === "load") emit(`${g(ins.ra)} = ea;`);
+        emit(`${fn}(c, ea, ${args});`);
+        if (ins.kind === "store") emit(`${g(ins.ra)} = ea;`);
+    }
+
     function addCallee(target, kind) {
         if (target < textBase || target >= textEnd) return;
         if (target >= start && target < end) return;
@@ -304,6 +326,11 @@ function translateFunction(opts) {
             const ea = dEA(ins);
             if (ins.kind === "load-multi") emit(`ppcx_lmw(c, ${ea}, ${ins.rt}u);`);
             else emit(`ppcx_stmw(c, ${ea}, ${ins.rt}u);`);
+            continue;
+        }
+
+        if (ins.access === "psq") {
+            emitPsq(ins);
             continue;
         }
 

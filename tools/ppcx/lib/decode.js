@@ -29,6 +29,8 @@ const RC_BIT = (w) => (w & 1) === 1; // record bit
 const LK_BIT = (w) => (w & 1) === 1; // link bit (branches)
 const OE_BIT = (w) => ((w >>> 10) & 1) === 1; // overflow-enable bit
 const SIMM = (w) => (w << 16) >> 16; // signed 16-bit immediate
+/* PSQ displacement (D-form bits 20..31), sign-extended from bit 20. */
+const SIMM12 = (w) => (w << 20) >> 20;
 const UIMM = (w) => w & 0xffff;
 const CRF = (w) => (w >>> 23) & 0x7; // CR field number (bits 23..25)
 const L_BIT31 = (w) => (w >>> 10) & 1; // bit 10 (compare width, lwarx EH)
@@ -294,12 +296,22 @@ const PS_X = {
     624: "ps_merge11",
 };
 
-// Quantized paired-single load/store (unsupported for now).
+// Quantized paired-single load/store, D-form. `I` selects GQR0..7 and `W`
+// selects a single element (PS1 becomes 1.0) instead of a pair.
 const PSQ = {
-    56: { name: "psq_l" },
-    57: { name: "psq_lu", update: true },
-    60: { name: "psq_st" },
-    61: { name: "psq_stu", update: true },
+    56: { name: "psq_l", kind: "load" },
+    57: { name: "psq_lu", kind: "load", update: true },
+    60: { name: "psq_st", kind: "store" },
+    61: { name: "psq_stu", kind: "store", update: true },
+};
+
+// Indexed (X-form) variants: opcode 4, 6-bit sub-opcode in bits 25..30 and
+// the Wx/Ix operand bits in 21..24 (Gekko instruction layout).
+const PSQX = {
+    6: { name: "psq_lx", kind: "load" },
+    7: { name: "psq_stx", kind: "store" },
+    38: { name: "psq_lux", kind: "load", update: true },
+    39: { name: "psq_stux", kind: "store", update: true },
 };
 
 // ---------------------------------------------------------------------------
@@ -584,6 +596,26 @@ function decode(word) {
             d.supported = true;
             return d;
         }
+        // Indexed quantized load/store: sub-opcode in bits 25..30, Wx/Ix in
+        // bits 21..24. The pivot (6/7/38/39) never collides with PS_X or
+        // PS_A (verified by the decode tests).
+        const infoQ = PSQX[(w >>> 1) & 0x3f];
+        if (infoQ) {
+            return {
+                ...base,
+                name: infoQ.name,
+                form: "X",
+                kind: infoQ.kind,
+                access: "psq",
+                frd: RT(w),
+                ra: RA(w),
+                rb: RB(w),
+                w: (w >>> 10) & 1,
+                i: (w >>> 7) & 7,
+                update: !!infoQ.update,
+                supported: true,
+            };
+        }
         const xo5 = XO5(w);
         const nameA = PS_A[xo5];
         if (nameA) {
@@ -602,19 +634,22 @@ function decode(word) {
         return { ...base, name: `op4-xo${xo10}`, supported: false, unknownOpcode: true };
     }
 
-    // --- quantized paired-single load/store ---
+    // --- quantized paired-single load/store (D-form) ---
     if (PSQ[op]) {
         const info = PSQ[op];
         return {
             ...base,
             name: info.name,
             form: "PSQ",
+            kind: info.kind,
+            access: "psq",
             frd: RT(w),
             ra: RA(w),
+            disp: SIMM12(w),
             w: (w >>> 15) & 1,
             i: (w >>> 12) & 7,
             update: !!info.update,
-            supported: false,
+            supported: true,
         };
     }
 

@@ -70,7 +70,7 @@ Deliverable: `docs/architecture/` decision record.
 ## Phase 2 stabilization gate — mandatory before first light
 
 - [x] Resolve source-level PowerPC semantic defects PPC-001..PPC-013, each with a failing synthetic regression first (compiled differential harness + 10/10 mutation check; see the audit).
-- [x] Compile and execute generated C against a separate reference oracle for the integer core (185 programs × full register/flag/memory comparison); FP and branch/system coverage remain open.
+- [x] Compile and execute generated C against a separate reference oracle for the integer core and the quantized paired-single load/store path (221 programs × full register/flag/FPR/GQR/memory comparison); FP arithmetic and branch/system coverage remain open.
 - [ ] Implement authenticated RPX section/data image, relocation handling, memory checks and typed, non-silent Cafe OS HLE.
 - [ ] Establish deterministic headless boot checkpoints, content-addressed analysis caches and scalable generated-C shards.
 - [x] Configure PR CI on synthetic sources only (`node-tools`, C syntax — no game input); game-derived verification stays a local, user-run step.

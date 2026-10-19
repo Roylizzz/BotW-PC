@@ -5,7 +5,7 @@
 ## Phase 2A — CPU correctness gate (P0)
 
 - [x] Correct PPC-001..PPC-013 from [the code audit](../audits/2026-10-18-code-audit.md) with regression tests written first (10/10 mutations detected — see the audit's fix verification results).
-- [ ] Build independent differential oracle for synthetic PowerPC sequences and compare GPR/FPR raw bits, CR, LR, CTR, XER, guest memory and traps. *(Started: the integer core compares GPR/XER(OV/SO/CA)/CR/LR/CTR and memory windows over 185 compiled programs; FPR raw bits and trap conditions pending.)*
+- [ ] Build independent differential oracle for synthetic PowerPC sequences and compare GPR/FPR raw bits, CR, LR, CTR, XER, guest memory and traps. *(Implemented: the integer core and the quantized paired-single load/store path compare GPR/XER(OV/SO/CA)/CR/LR/CTR, raw-bit FPR lanes, GQR/HID2 and memory windows over 221 compiled programs; FP arithmetic and trap conditions remain open.)*
 - [x] Compile generated C in tests using the host C compiler; assert actual behavior beyond emitted text (TCC locally; the compiled-harness CI job is pending).
 - [ ] Run tests automatically across supported Windows/Linux host toolchains and reject unsupported machine-code features explicitly. *(Started: CI runs the JS suites on Linux with Node 22/24; the compiled harness runs locally; Windows verified locally; unsupported machine code stops with `PPCX_UNIMPL`.)*
 - [ ] Publish metrics separately for decoded words, behaviorally verified instructions, compiled/reachable functions and actual HLE implementations. *(Started: decoded-word coverage, the compiled harness and HLE stubs are reported separately; "verified" currently means harness coverage, not the whole module.)*

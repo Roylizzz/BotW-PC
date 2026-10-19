@@ -116,11 +116,24 @@ function buildHarness(cases) {
     out.push('    printf("\\n");');
     out.push("}");
     out.push("");
+    out.push("/* Single-precision print of an FPR lane: NaN prints canonically so the");
+    out.push(" * value-level model never compares NaN payloads. */");
+    out.push("static u32 print_single(u64 x) {");
+    out.push("    if (((x >> 52) & 0x7ffu) == 0x7ffu && (x & 0x000fffffffffffffull) != 0ull) return 0x7fc00000u;");
+    out.push("    return ppcx_single_bits_from_bits(x);");
+    out.push("}");
+    out.push("");
     out.push("static void report(Cpu *c, const u32 *dumps, u32 dumpCount) {");
     out.push('    printf("gpr");');
     out.push('    for (int i = 0; i < 32; i++) printf(" %08x", c->gpr[i]);');
     out.push('    printf("\\n");');
     out.push('    printf("xer %08x cr %08x lr %08x ctr %08x\\n", c->xer, c->cr, c->lr, c->ctr);');
+    out.push('    printf("fpr");');
+    out.push('    for (int i = 0; i < 32; i++) printf(" %08x %08x", print_single(c->fpr[i].ps0.u), print_single(c->fpr[i].ps1.u));');
+    out.push('    printf("\\n");');
+    out.push('    printf("gqr");');
+    out.push('    for (int i = 0; i < 8; i++) printf(" %08x", c->gqr[i]);');
+    out.push('    printf(" hid2 %08x\\n", c->hid2);');
     out.push("    for (u32 i = 0; i < dumpCount; i++) print_mem(dumps[2 * i], dumps[2 * i + 1]);");
     out.push("}");
     out.push("");
@@ -132,11 +145,17 @@ function buildHarness(cases) {
         out.push(`static void case_${i}(void) {`);
         out.push("    memset(&cpu, 0, sizeof cpu);");
         out.push("    cpu.resv = 0xffffffffu;");
+        out.push("    cpu.hid2 = PPCX_HID2_LSQE; /* modelled boot state */");
         for (const [k, v] of Object.entries(init.gpr || {})) out.push(`    cpu.gpr[${k}] = ${cHex(v)};`);
         if (init.xer !== undefined) out.push(`    cpu.xer = ${cHex(init.xer)};`);
         if (init.cr !== undefined) out.push(`    cpu.cr = ${cHex(init.cr)};`);
         if (init.lr !== undefined) out.push(`    cpu.lr = ${cHex(init.lr)};`);
         if (init.ctr !== undefined) out.push(`    cpu.ctr = ${cHex(init.ctr)};`);
+        if (init.hid2 !== undefined) out.push(`    cpu.hid2 = ${cHex(init.hid2)};`);
+        for (const [k, v] of Object.entries(init.gqr || {})) out.push(`    cpu.gqr[${k}] = ${cHex(v)};`);
+        for (const [k, v] of Object.entries(init.fpr || {}))
+            for (let lane = 0; lane < 2; lane++)
+                out.push(`    cpu.fpr[${k}].ps${lane}.d = (double)ppcx_bits_f32(${cHex(v[lane])});`);
         out.push("    memset(ppcx_memory, 0, PPCX_ARENA);");
         for (const m of c.mem || []) {
             const list = Buffer.from(m.hex, "hex");

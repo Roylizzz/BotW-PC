@@ -209,7 +209,53 @@ test("marks unsupported instructions without losing the name", () => {
     assert.equal(sc.supported, false);
     const psq = decode((56 << 26) | (1 << 21)); // psq_l f1, 0(r0), 0, 0
     assert.equal(psq.name, "psq_l");
-    assert.equal(psq.supported, false);
+    assert.equal(psq.supported, true);
+});
+
+test("decodes psq fields and the indexed forms", () => {
+    const d = decode((57 << 26) | (3 << 21) | (4 << 16) | (1 << 15) | (5 << 12) | ((-8) & 0xfff));
+    assert.equal(d.name, "psq_lu");
+    assert.equal(d.form, "PSQ");
+    assert.equal(d.kind, "load");
+    assert.equal(d.access, "psq");
+    assert.equal(d.frd, 3);
+    assert.equal(d.ra, 4);
+    assert.equal(d.w, 1);
+    assert.equal(d.i, 5);
+    assert.equal(d.disp, -8);
+    assert.equal(d.update, true);
+
+    const st = decode((60 << 26) | (2 << 21) | 0x123);
+    assert.equal(st.name, "psq_st");
+    assert.equal(st.kind, "store");
+    assert.equal(st.update, false);
+    assert.equal(st.disp, 0x123);
+
+    const lx = decode((4 << 26) | (7 << 21) | (8 << 16) | (9 << 11) | (1 << 10) | (2 << 7) | (38 << 1));
+    assert.equal(lx.name, "psq_lux");
+    assert.equal(lx.frd, 7);
+    assert.equal(lx.ra, 8);
+    assert.equal(lx.rb, 9);
+    assert.equal(lx.w, 1);
+    assert.equal(lx.i, 2);
+    assert.equal(lx.update, true);
+
+    const stx = decode((4 << 26) | (39 << 1));
+    assert.equal(stx.name, "psq_stux");
+    assert.equal(stx.kind, "store");
+    assert.equal(stx.update, true);
+
+    // The sub-opcode pivot never shadows the paired-single tables.
+    for (const sub6 of [6, 7, 38, 39]) {
+        for (let ix = 0; ix < 8; ix++) {
+            for (let wx = 0; wx < 2; wx++) {
+                const q = decode((4 << 26) | (wx << 10) | (ix << 7) | (sub6 << 1));
+                assert.ok(q.name.startsWith("psq_"), `${q.name} for sub6=${sub6} ix=${ix} wx=${wx}`);
+            }
+        }
+    }
+    assert.equal(decode((4 << 26) | (72 << 1)).name, "ps_mr");
+    assert.equal(decode((4 << 26) | (21 << 1)).name, "ps_add");
 });
 
 test("decodes mtcrf fields", () => {

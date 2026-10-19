@@ -247,6 +247,10 @@ int ppcx_run(void) {
     Cpu cpu;
     ppcx_runtime_init();
     memset(&cpu, 0, sizeof(cpu));
+    /* Modelled boot state: the system software leaves the quantized
+     * load/store unit enabled (the shipped game code never writes HID2 and
+     * still executes psq_* instructions, so LSQE must already be set). */
+    cpu.hid2 = PPCX_HID2_LSQE;
     cpu.gpr[1] = PPCX_INITIAL_STACK;
     fprintf(stderr, "ppcx: entry 0x%08X, %u translated function(s)\n",
             (unsigned)ppcx_entry, ppcx_function_count);

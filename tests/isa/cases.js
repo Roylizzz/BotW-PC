@@ -73,6 +73,17 @@ const A = {
     dcbz: (ra, rb) => ((31 << 26) | (ra << 16) | (rb << 11) | (1014 << 1)) >>> 0,
     tw: (to, ra, rb) => ((31 << 26) | (to << 21) | (ra << 16) | (rb << 11) | (4 << 1)) >>> 0,
 
+    /* PSQ: D-form (12-bit displacement) and indexed X-form (sub-opcode in
+     * bits 25..30, W/I in bits 21..24). */
+    psq_l: (frd, ra, d, w, i) => ((56 << 26) | (frd << 21) | (ra << 16) | (w << 15) | (i << 12) | (d & 0xfff)) >>> 0,
+    psq_lu: (frd, ra, d, w, i) => ((57 << 26) | (frd << 21) | (ra << 16) | (w << 15) | (i << 12) | (d & 0xfff)) >>> 0,
+    psq_st: (frs, ra, d, w, i) => ((60 << 26) | (frs << 21) | (ra << 16) | (w << 15) | (i << 12) | (d & 0xfff)) >>> 0,
+    psq_stu: (frs, ra, d, w, i) => ((61 << 26) | (frs << 21) | (ra << 16) | (w << 15) | (i << 12) | (d & 0xfff)) >>> 0,
+    psq_lx: (frd, ra, rb, w, i) => ((4 << 26) | (frd << 21) | (ra << 16) | (rb << 11) | (w << 10) | (i << 7) | (6 << 1)) >>> 0,
+    psq_stx: (frs, ra, rb, w, i) => ((4 << 26) | (frs << 21) | (ra << 16) | (rb << 11) | (w << 10) | (i << 7) | (7 << 1)) >>> 0,
+    psq_lux: (frd, ra, rb, w, i) => ((4 << 26) | (frd << 21) | (ra << 16) | (rb << 11) | (w << 10) | (i << 7) | (38 << 1)) >>> 0,
+    psq_stux: (frs, ra, rb, w, i) => ((4 << 26) | (frs << 21) | (ra << 16) | (rb << 11) | (w << 10) | (i << 7) | (39 << 1)) >>> 0,
+
     sync: 0x7c0004ac,
     lwsync: 0x7c2004ac,
     eieio: 0x7c0006ac,
@@ -392,6 +403,234 @@ function buildCases() {
     );
     add("fences keep state", [A.sync, A.lwsync, A.eieio, A.isync, A.blr], { cr: 0x12345678, xer: 0x20000000 });
     add("tw with a false condition continues", [A.tw(24, 0, 0), A.addi(3, 0, 1), A.blr], {});
+
+    /* --- quantized paired-single load/store (GQR-driven) --- */
+    const fbits = (bits) => [bits >>> 24, (bits >>> 16) & 0xff, (bits >>> 8) & 0xff, bits & 0xff];
+
+    add(
+        "psq_l float pair",
+        [A.psq_l(2, 4, 0, 0, 0), A.blr],
+        { gpr: { 4: MEM } },
+        [{ addr: MEM, hex: bytes(...fbits(0x3f800000), ...fbits(0xbf800000)) }]
+    );
+    add(
+        "psq_l float unpaired fills ps1 with 1.0",
+        [A.psq_l(2, 4, 0, 1, 0), A.blr],
+        { gpr: { 4: MEM } },
+        [{ addr: MEM, hex: bytes(...fbits(0xc0000000)) }]
+    );
+    add(
+        "psq_l float subnormal and negative zero",
+        [A.psq_l(2, 4, 0, 0, 0), A.blr],
+        { gpr: { 4: MEM } },
+        [{ addr: MEM, hex: bytes(...fbits(0x00000001), ...fbits(0x80000000)) }]
+    );
+    add(
+        "psq_l float infinity and NaN",
+        [A.psq_l(2, 4, 0, 0, 0), A.blr],
+        { gpr: { 4: MEM } },
+        [{ addr: MEM, hex: bytes(...fbits(0x7f800000), ...fbits(0x7fc00001)) }]
+    );
+    add(
+        "psq_l u8 pair",
+        [A.psq_l(2, 4, 0, 0, 0), A.blr],
+        { gpr: { 4: MEM }, gqr: { 0: (4 << 16) | 4 } },
+        [{ addr: MEM, hex: bytes(0x80, 0x7f) }]
+    );
+    add(
+        "psq_l s8 pair",
+        [A.psq_l(2, 4, 0, 0, 0), A.blr],
+        { gpr: { 4: MEM }, gqr: { 0: (6 << 16) | 6 } },
+        [{ addr: MEM, hex: bytes(0x80, 0x7f) }]
+    );
+    add(
+        "psq_l u16 pair",
+        [A.psq_l(2, 4, 0, 0, 0), A.blr],
+        { gpr: { 4: MEM }, gqr: { 0: (5 << 16) | 5 } },
+        [{ addr: MEM, hex: bytes(0x80, 0x01, 0x7f, 0xff) }]
+    );
+    add(
+        "psq_l s16 pair",
+        [A.psq_l(2, 4, 0, 0, 0), A.blr],
+        { gpr: { 4: MEM }, gqr: { 0: (7 << 16) | 7 } },
+        [{ addr: MEM, hex: bytes(0x80, 0x01, 0x7f, 0xff) }]
+    );
+    add(
+        "psq_l u8 unpaired",
+        [A.psq_l(2, 4, 0, 1, 0), A.blr],
+        { gpr: { 4: MEM }, gqr: { 0: (4 << 16) | 4 } },
+        [{ addr: MEM, hex: bytes(0xc8) }]
+    );
+    add(
+        "psq_l s16 unpaired with negative scale",
+        [A.psq_l(2, 4, 0, 1, 0), A.blr],
+        { gpr: { 4: MEM }, gqr: { 0: (7 << 16) | (62 << 24) } },
+        [{ addr: MEM, hex: bytes(0x00, 0x10) }]
+    );
+    add(
+        "psq_l s16 pair with positive scale",
+        [A.psq_l(2, 4, 0, 0, 0), A.blr],
+        { gpr: { 4: MEM }, gqr: { 0: (7 << 16) | (3 << 24) } },
+        [{ addr: MEM, hex: bytes(0x01, 0x00, 0xff, 0xfc) }]
+    );
+    add(
+        "psq_l negative displacement",
+        [A.addi(5, 0, MEM + 8), A.psq_l(2, 5, -8, 0, 0), A.blr],
+        { gqr: { 0: (4 << 16) | 4 } },
+        [{ addr: MEM, hex: bytes(0x11, 0x22) }]
+    );
+    add(
+        "psq_l r0 base uses the literal displacement",
+        [A.psq_l(2, 0, 0x100, 0, 0), A.blr],
+        { gpr: { 0: 0xdeadbeef }, gqr: { 0: (4 << 16) | 4 } },
+        [{ addr: 0x100, hex: bytes(0x2a, 0x2b) }]
+    );
+    add(
+        "psq_lu updates rA and loads",
+        [A.addi(5, 0, MEM + 4), A.psq_lu(2, 5, -4, 0, 0), A.blr],
+        { gqr: { 0: (7 << 16) | 7 } },
+        [{ addr: MEM, hex: bytes(0xff, 0xfe, 0x00, 0x02) }]
+    );
+    add(
+        "psq_lu r0 base reads gpr0 and writes it back",
+        [A.psq_lu(2, 0, -4, 0, 0), A.blr],
+        { gpr: { 0: MEM + 4 }, gqr: { 0: (7 << 16) | 7 } },
+        [{ addr: MEM, hex: bytes(0x00, 0x05, 0x00, 0x02) }]
+    );
+    add(
+        "psq_lx indexed pair",
+        [A.addi(4, 0, MEM), A.psq_lx(2, 4, 0, 0, 0), A.blr],
+        { gqr: { 0: (7 << 16) | 7 } },
+        [{ addr: MEM, hex: bytes(0xff, 0xfe, 0x00, 0x02) }]
+    );
+    add(
+        "psq_lx rA = 0 uses rB",
+        [A.addi(5, 0, MEM), A.psq_lx(2, 0, 5, 1, 0), A.blr],
+        { gpr: { 0: 0xdeadbeef }, gqr: { 0: (7 << 16) | 7 } },
+        [{ addr: MEM, hex: bytes(0x00, 0x40) }]
+    );
+    add(
+        "psq_lux updates rA",
+        [A.addi(4, 0, MEM + 2), A.addi(5, 0, -2), A.psq_lux(2, 4, 5, 0, 0), A.blr],
+        { gqr: { 0: (7 << 16) | 7 } },
+        [{ addr: MEM, hex: bytes(0x00, 0x03, 0xff, 0xfd) }]
+    );
+    add(
+        "psq_l invalid type zeroes both lanes",
+        [A.psq_l(5, 4, 0, 0, 0), A.blr],
+        { gpr: { 4: MEM }, gqr: { 0: 1 << 16 }, fpr: { 5: [0x3f800000, 0x3f800000] } },
+        [{ addr: MEM, hex: bytes(0x11, 0x22, 0x33, 0x44) }]
+    );
+    add(
+        "psq_l GQR index selects the register",
+        [A.psq_l(2, 4, 0, 0, 0), A.psq_l(3, 4, 0, 0, 5), A.blr],
+        { gpr: { 4: MEM }, gqr: { 5: (7 << 16) | 7 } },
+        [{ addr: MEM, hex: bytes(0x3f, 0x80, 0x00, 0x00) }]
+    );
+    add(
+        "psq_st float pair",
+        [A.psq_st(3, 4, 0, 0, 0), A.blr],
+        { gpr: { 4: MEM }, fpr: { 3: [0x3f800000, 0xc0000000] } },
+        [],
+        [{ addr: MEM, len: 8 }]
+    );
+    add(
+        "psq_st float unpaired writes one element",
+        [A.psq_st(3, 4, 4, 1, 0), A.blr],
+        { gpr: { 4: MEM }, fpr: { 3: [0xc2c80000, 0x3f800000] } },
+        [],
+        [{ addr: MEM + 4, len: 4 }]
+    );
+    add(
+        "psq_st float flushes subnormals to signed zero",
+        [A.psq_st(3, 4, 0, 0, 0), A.blr],
+        { gpr: { 4: MEM }, fpr: { 3: [0x00000001, 0x80000001] } },
+        [],
+        [{ addr: MEM, len: 8 }]
+    );
+    add(
+        "psq_st float keeps infinities and negative zero",
+        [A.psq_st(3, 4, 0, 0, 0), A.blr],
+        { gpr: { 4: MEM }, fpr: { 3: [0xff800000, 0x80000000] } },
+        [],
+        [{ addr: MEM, len: 8 }]
+    );
+    add(
+        "psq_st u8 clamps and truncates",
+        [A.psq_st(3, 4, 0, 0, 0), A.blr],
+        { gpr: { 4: MEM }, gqr: { 0: 4 }, fpr: { 3: [0x43964000, 0xbfc00000] } },
+        [],
+        [{ addr: MEM, len: 2 }]
+    );
+    add(
+        "psq_st u8 truncates toward zero",
+        [A.psq_st(3, 4, 0, 0, 0), A.blr],
+        { gpr: { 4: MEM }, gqr: { 0: 4 }, fpr: { 3: [0x42ffcccd, 0x3f000000] } },
+        [],
+        [{ addr: MEM, len: 2 }]
+    );
+    add(
+        "psq_st u8 unpaired truncates",
+        [A.psq_st(3, 4, 0, 1, 0), A.blr],
+        { gpr: { 4: MEM }, gqr: { 0: 4 }, fpr: { 3: [0x40600000, 0x00000000] } },
+        [],
+        [{ addr: MEM, len: 1 }]
+    );
+    add(
+        "psq_st s16 scales by a positive power of two",
+        [A.psq_st(3, 4, 0, 0, 0), A.blr],
+        { gpr: { 4: MEM }, gqr: { 0: 7 | (1 << 8) }, fpr: { 3: [0x40200000, 0xc0200000] } },
+        [],
+        [{ addr: MEM, len: 4 }]
+    );
+    add(
+        "psq_st s16 scales by a negative power of two",
+        [A.psq_st(3, 4, 0, 0, 0), A.blr],
+        { gpr: { 4: MEM }, gqr: { 0: 7 | (62 << 8) }, fpr: { 3: [0x42c80000, 0xc2c80000] } },
+        [],
+        [{ addr: MEM, len: 4 }]
+    );
+    add(
+        "psq_st u16 pair offsets ps1",
+        [A.psq_st(3, 4, 2, 0, 0), A.blr],
+        { gpr: { 4: MEM }, gqr: { 0: 5 }, fpr: { 3: [0x3f800000, 0xbf800000] } },
+        [],
+        [{ addr: MEM + 2, len: 4 }]
+    );
+    add(
+        "psq_st invalid type does not write",
+        [A.psq_st(3, 4, 0, 0, 0), A.blr],
+        { gpr: { 4: MEM }, gqr: { 0: 2 }, fpr: { 3: [0x3f800000, 0x40000000] } },
+        [{ addr: MEM, hex: bytes(0x11, 0x22, 0x33, 0x44) }],
+        [{ addr: MEM, len: 4 }]
+    );
+    add(
+        "psq_stu updates rA and stores",
+        [A.addi(5, 0, MEM + 4), A.psq_stu(2, 5, -4, 0, 0), A.blr],
+        { fpr: { 2: [0x3f800000, 0x40000000] } },
+        [],
+        [{ addr: MEM, len: 8 }]
+    );
+    add(
+        "psq_stu r0 base writes r0",
+        [A.psq_stu(2, 0, -4, 0, 0), A.blr],
+        { gpr: { 0: MEM + 4 }, fpr: { 2: [0x3f800000, 0x40000000] } },
+        [],
+        [{ addr: MEM, len: 8 }]
+    );
+    add(
+        "psq_stx indexed store",
+        [A.addi(4, 0, MEM), A.addi(5, 0, 8), A.psq_stx(2, 4, 5, 0, 0), A.blr],
+        { fpr: { 2: [0x3f800000, 0x40000000] } },
+        [],
+        [{ addr: MEM + 8, len: 8 }]
+    );
+    add(
+        "mtspr/mfspr round-trip the GQRs",
+        [A.mtspr(912, 3), A.mfspr(4, 912), A.mtspr(919, 3), A.mfspr(5, 919), A.blr],
+        { gpr: { 3: 0x10203040 } }
+    );
+    add("mtspr/mfspr round-trip HID2", [A.mtspr(920, 3), A.mfspr(4, 920), A.blr], { gpr: { 3: 0x11223344 } });
 
     return cases;
 }

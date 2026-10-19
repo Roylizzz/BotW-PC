@@ -4,6 +4,8 @@
 
 **Status on the audit branch (`audit/2026-10-18-integral-audit`, re-verified 2026-10-18):** PPC-001…PPC-013 are fixed with regression tests — the differential harness compiles 185 synthetic programs and every defect mutation re-introduced in the sources is detected (10/10). RUN-001…RUN-006 stay open (tracked by the [implementation plan](../architecture/implementation-plan.md)); RUN-007 is partially addressed (CI runs the node suites and C syntax checks; the compiled-harness job is pending); RUN-008 no longer reproduces (the architecture README now records ADR-0002). Evidence under *Fix verification results*.
 
+**Follow-up (2026-10-19):** the last known-unsupported block — `psq_l`/`psq_lu`/`psq_st`/`psq_stu` plus the indexed forms, 211,416 words in this module — is implemented (GQR0–7/HID2 state, reference dequantize/quantize semantics) and differentially tested; decoded-word coverage is now 99.9993% (9,248,451 of 9,248,515) with zero known-unsupported instructions.
+
 | ID | Severity | Location | Observation | Acceptance |
 |---|---|---|---|---|
 | PPC-001 | P0 | src/runtime/include/ppcx_abi.h:ppcx_mask_mb_me | PowerPC MSB-indexed masks are incorrectly generated. MB=0, ME=0 currently produces 0x00000001 instead of 0x80000000 | All 1,024 MB/ME pairs checked against independent oracle |
@@ -22,15 +24,15 @@
 | RUN-001 | P0 | src/runtime/src/ppcx_runtime.c | All HLE imports currently return with CPU unchanged | Typed HLE registry, strict unknown-import failure, OS models |
 | RUN-002 | P0 | tools/ppcx / runtime | Missing loaded .rodata/.data/.bss image and applied data relocations | Synthetic loaded sections and relocation fixtures |
 | RUN-003 | P1 | ppcx_abi.h:ppcx_ptr | Unchecked raw host pointer arithmetic and approximately 3.03-GiB flat guest arena | Checked address/permissions, predictable guest fault |
-| RUN-004 | P1 | ppcx ABI | FPSCR, GQR quantization, floating estimates, reservation/multicore semantics approximated | Family-specific differential tests and documented status |
+| RUN-004 | P1 | ppcx ABI | FPSCR, floating estimates and reservation/multicore semantics approximated (GQR quantization and the paired-single path implemented and differentially tested 2026-10-19) | Family-specific differential tests and documented status |
 | RUN-005 | P1 | tools/ppcx/ppcx.js:loadOrComputeAnalysis | Cache keyed only by analysis schema/base/size, not input digest | Digest verified with source image |
 | RUN-006 | P1 | tools/ppcx/ppcx.js:cmdTranslate | Monolithic gen.c at large scale, heuristic function range splits | Sharded deterministic compiler with CFG confidence evidence |
 | RUN-007 | P1 | GitHub repo metadata | No workflow runs, releases or protection on main at review time | Add CI and required checks; then protect branch |
 | RUN-008 | P2 | docs/architecture/README.md | Claims port strategy undecided although ADR-0002 was accepted | Sync with actual decision |
 
-**Tests:** Before the audit the source declared 75 JS cases and none had been executed by the auditor. On the audit branch the suites were extended and executed on 2026-10-18: **94/94 pass** — 79 in `tools/ppcx`, 12 in `tools/rpxinfo`, 3 in `tests/isa`. The new differential harness compiles 185 synthetic guest programs with a real C compiler (TCC 0.9.27 locally; harness CI pending) and compares complete integer machine state against an independent oracle instead of asserting emitted strings.
+**Tests:** Before the audit the source declared 75 JS cases and none had been executed by the auditor. On the audit branch the suites were extended and executed on 2026-10-18: **94/94 pass** — 79 in `tools/ppcx`, 12 in `tools/rpxinfo`, 3 in `tests/isa` (2026-10-19 follow-up: **97/97** — 82/12/3). The differential harness compiles 185 synthetic guest programs with a real C compiler (TCC 0.9.27 locally; harness CI pending; 221 programs today) and compares complete machine state — GPR/XER/CR/LR/CTR plus raw-bit FPR lanes, GQR/HID2 and memory windows — against an independent oracle instead of asserting emitted strings.
 
-**Published metrics:** Re-measured on the audit branch with the corrected decoder: **97.71% supported** (9,037,035 of 9,248,515 words), **2.29% known-unsupported** (211,416: only `psq_l` and `psq_st`) and **64 unknown/data words (0.00%)**; 96,874 discovered function starts, 89,438 fully supported. One compiled end-to-end demonstration still reaches the traced proc_ui HLE call. None of this implies a playable game, 97.71% instruction semantic equivalence, working Cafe OS, or graphics.
+**Published metrics:** Re-measured on the audit branch with the corrected decoder: **97.71% supported** (9,037,035 of 9,248,515 words), **2.29% known-unsupported** (211,416: only `psq_l` and `psq_st`) and **64 unknown/data words (0.00%)**; 96,874 discovered function starts, 89,438 fully supported (2026-10-19 follow-up: **99.9993% supported**, 9,248,451 words, zero known-unsupported, same 64 unknown/data words, 96,857 fully supported functions). One compiled end-to-end demonstration still reaches the traced proc_ui HLE call. None of this implies a playable game, instruction semantic equivalence, working Cafe OS, or graphics.
 
 ## Fix verification protocol
 
@@ -47,9 +49,9 @@ See [port survey](../research/2026-10-native-port-patterns.md) and [implementati
 
 ## Fix verification results (audit branch, 2026-10-18)
 
-- **Differential harness:** `node tests/isa/run.js` → `isa: 185 programs, compiled with <TCC 0.9.27>, 379 state lines` / `isa: OK, generated code matches the independent oracle`. The rotate-mask helper was additionally swept over all 1,024 (MB, ME) pairs against a bit-by-bit model of the ISA and against the reference emulator's construction; the pre-fix helper was wrong for 962 of 1,024 pairs.
+- **Differential harness:** `node tests/isa/run.js` → `isa: 185 programs, compiled with <TCC 0.9.27>, 379 state lines` / `isa: OK, generated code matches the independent oracle` (2026-10-19, with the paired-single cases: `isa: 221 programs, … 907 state lines`). The rotate-mask helper was additionally swept over all 1,024 (MB, ME) pairs against a bit-by-bit model of the ISA and against the reference emulator's construction; the pre-fix helper was wrong for 962 of 1,024 pairs.
 - **Mutation check:** every fixed defect was re-introduced in a child process and the harness had to fail (`build/audit/mutation-check.js`, local, git-ignored). All 10 mutations detected: PPC-001 (37 mismatching cases), PPC-002 (3), PPC-004 (142), PPC-005 (1), PPC-007 (3), PPC-009 (1), PPC-010 (20), PPC-011 (6), PPC-012 (2), PPC-013 (3). PPC-003/006/008 are pinned by unit tests (`bcl` LR + dispatch, `cmpli` zero-extension, `lwsync` codegen).
-- **Suites:** 94/94 across `tools/ppcx` (79), `tools/rpxinfo` (12) and `tests/isa` (3).
+- **Suites:** 94/94 across `tools/ppcx` (79), `tools/rpxinfo` (12) and `tests/isa` (3); after the paired-single follow-up (2026-10-19): 97/97 — 82/12/3.
 - **Latency in this title** (census with the corrected decoder): v208 contains no OE=1 instruction (`oeSet 0`), no `bcl` with LK (`bcLk 0`) and no `lwsync` — PPC-008/010/012/013 were latent *here* but wrong in general. PPC-001 affects 194,957 rotate-mask instructions, PPC-005 117 negative `mulli`, PPC-011 656 divides; `neg` occurs 7,471 times.
 - **Runtime demo:** `translate --fn 0x031FA4CC --follow 2` re-run: 1 function, 3 instructions, HLE `proc_ui.ProcUIInit`, 0 unsupported, 0 warnings; TCC compiles the emitted C (1,744-byte object).
 - **Tooling path re-verified:** direct Ghidra 12.1.4 headless is the only deep-analysis path on Windows for this RPX — a read-only pass opened the local program as `PowerPC:BE:32:Gekko_Broadway_Espresso` and exported 97,365 functions; REA accepts the file identity but every candidate provider refuses it (see [environment](../reverse-engineering/environment.md)).

@@ -72,11 +72,17 @@ typedef struct Cpu {
     u32 sr[16];
     u64 tb; /* time base, advanced by the runtime */
     u32 sprs[8];
+    u32 gqr[8]; /* SPR 912..919: graphics quantization registers */
+    u32 hid2;   /* SPR 920: LSQE (bit 31) gates the psq_* instructions */
 } Cpu;
 
 #define PPCX_XER_SO 0x80000000u
 #define PPCX_XER_OV 0x40000000u
 #define PPCX_XER_CA 0x20000000u
+
+/* HID2 (SPR 920): LSQE, load/store quantization enable. The boot environment
+ * must leave it set for the psq_* instructions to execute. */
+#define PPCX_HID2_LSQE 0x80000000u
 
 /* ------------------------------------------------------------------ */
 /* Guest memory access                                                */
@@ -227,6 +233,19 @@ static inline u32 ppcx_single_bits_from_bits(u64 x) {
         return t;
     }
     return (u32)(((x >> 32) & 0xc0000000ull) | ((x >> 29) & 0x3fffffffull));
+}
+
+/*
+ * The same conversion with the flush-to-zero behavior the reference emulator
+ * applies to float-typed psq_st stores: doubles strictly inside the
+ * single-subnormal range store a sign-only zero.
+ */
+static inline u32 ppcx_single_bits_from_bits_ftz(u64 x) {
+    const u32 exp = (u32)((x >> 52) & 0x7ffu);
+    if (exp > 896u || (x & ~0x8000000000000000ull) == 0ull) {
+        return (u32)(((x >> 32) & 0xc0000000ull) | ((x >> 29) & 0x3fffffffull));
+    }
+    return (u32)((x >> 32) & 0x80000000ull);
 }
 
 /*
@@ -558,7 +577,10 @@ static inline u32 ppcx_mfspr(Cpu *c, u32 spr) {
     case 269: return (u32)(c->tb >> 32);
     case 272: case 273: case 274: case 275: return c->sprs[spr - 272];
     case 287: return 0x70010200u; /* PVR: Espresso (value to verify) */
-    default: return 0;
+    default:
+        if (spr >= 912u && spr <= 919u) return c->gqr[spr - 912u];
+        if (spr == 920u) return c->hid2;
+        return 0;
     }
 }
 
@@ -568,7 +590,10 @@ static inline void ppcx_mtspr(Cpu *c, u32 spr, u32 v) {
     case 8: c->lr = v; break;
     case 9: c->ctr = v; break;
     case 272: case 273: case 274: case 275: c->sprs[spr - 272] = v; break;
-    default: break;
+    default:
+        if (spr >= 912u && spr <= 919u) c->gqr[spr - 912u] = v;
+        else if (spr == 920u) c->hid2 = v;
+        break;
     }
 }
 
@@ -686,6 +711,181 @@ static inline u64 ppcx_fctidz_result(double v) {
         if (t >= 9223372036854775808.0) return 0x7fffffffffffffffull;
         if (t < -9223372036854775808.0) return 0x8000000000000000ull;
         return (u64)(s64)t;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Quantized paired-single load/store (psq_l/psq_st family)           */
+/* ------------------------------------------------------------------ */
+
+/*
+ * GQR layout (Gekko/Broadway/Espresso; field positions as in the reference
+ * emulator and the homebrew references): ST_TYPE bits 0..2, ST_SCALE bits
+ * 8..13, LD_TYPE bits 16..18, LD_SCALE bits 24..29.
+ *
+ * Quantize types: 0 float, 1..3 invalid, 4 u8, 5 u16, 6 s8, 7 s16. The
+ * scale fields are signed 6-bit values: a load multiplies by 2^-scale, a
+ * store by 2^scale, both in single precision.
+ *
+ * HID2.LSQE (bit 31) gates the family. The reference emulator only checks it
+ * on the D-form variants; this model gates all of them, per the
+ * architecture description.
+ */
+static inline u32 ppcx_gqr_ld_type(u32 gqr) { return (gqr >> 16) & 7u; }
+static inline u32 ppcx_gqr_ld_scale(u32 gqr) { return (gqr >> 24) & 63u; }
+static inline u32 ppcx_gqr_st_type(u32 gqr) { return gqr & 7u; }
+static inline u32 ppcx_gqr_st_scale(u32 gqr) { return (gqr >> 8) & 63u; }
+
+static inline int ppcx_gqr_signed_scale(u32 scale6) {
+    return (scale6 >= 32u) ? (int)scale6 - 64 : (int)scale6;
+}
+
+/* 2^s as an exact single for s in [-32, 32]. */
+static inline float ppcx_gqr_pow2(int s) {
+    union { u32 u; float f; } v;
+    v.u = (u32)(s + 127) << 23;
+    return v.f;
+}
+
+/*
+ * Reference dequantization: float(raw) * 2^-scale. Exact here: the raw value
+ * fits in a single and the factor is a power of two.
+ */
+static inline double ppcx_gqr_dequant(s32 raw, int scale) {
+    return (double)((float)raw * ppcx_gqr_pow2(-scale));
+}
+
+/*
+ * Reference quantization: float(ps) * 2^scale, clamped to the type range and
+ * truncated toward zero. A NaN operand is undefined in the reference; this
+ * model maps it to the minimum of the range.
+ */
+static inline s32 ppcx_gqr_quant(double ps, int scale, s32 lo, s32 hi) {
+    const float conv = (float)ps * ppcx_gqr_pow2(scale);
+    if (!(conv >= (float)lo)) return lo;
+    if (conv > (float)hi) return hi;
+    return (s32)conv;
+}
+
+/* psq_l/psq_lu/psq_lx/psq_lux: load and dequantize into FPR `frd`. */
+static inline void ppcx_psq_l(Cpu *c, u32 ea, u32 i, u32 w, u32 frd, u32 addr) {
+    const u32 gqr = c->gqr[i & 7u];
+    const u32 type = ppcx_gqr_ld_type(gqr);
+    const int scale = ppcx_gqr_signed_scale(ppcx_gqr_ld_scale(gqr));
+    double ps0 = 0.0;
+    double ps1 = 0.0;
+    if ((c->hid2 & PPCX_HID2_LSQE) == 0u) {
+        ppcx_trap(c, addr, "psq_l without HID2.LSQE");
+        return;
+    }
+    switch (type) {
+    case 0: /* float: exact single -> double widening */
+        ps0 = (double)ppcx_bits_f32(ppcx_rd32(ea));
+        ps1 = w ? 1.0 : (double)ppcx_bits_f32(ppcx_rd32(ea + 4u));
+        break;
+    case 4: /* u8 */
+        if (w) {
+            ps0 = ppcx_gqr_dequant((s32)ppcx_rd8(ea), scale);
+            ps1 = 1.0;
+        } else {
+            const u16 pair = ppcx_rd16(ea);
+            ps0 = ppcx_gqr_dequant((s32)(u8)(pair >> 8), scale);
+            ps1 = ppcx_gqr_dequant((s32)(u8)pair, scale);
+        }
+        break;
+    case 5: /* u16 */
+        if (w) {
+            ps0 = ppcx_gqr_dequant((s32)ppcx_rd16(ea), scale);
+            ps1 = 1.0;
+        } else {
+            const u32 pair = ppcx_rd32(ea);
+            ps0 = ppcx_gqr_dequant((s32)(u16)(pair >> 16), scale);
+            ps1 = ppcx_gqr_dequant((s32)(u16)pair, scale);
+        }
+        break;
+    case 6: /* s8 */
+        if (w) {
+            ps0 = ppcx_gqr_dequant((s32)(s8)ppcx_rd8(ea), scale);
+            ps1 = 1.0;
+        } else {
+            const u16 pair = ppcx_rd16(ea);
+            ps0 = ppcx_gqr_dequant((s32)(s8)(u8)(pair >> 8), scale);
+            ps1 = ppcx_gqr_dequant((s32)(s8)(u8)pair, scale);
+        }
+        break;
+    case 7: /* s16 */
+        if (w) {
+            ps0 = ppcx_gqr_dequant((s32)(s16)ppcx_rd16(ea), scale);
+            ps1 = 1.0;
+        } else {
+            const u32 pair = ppcx_rd32(ea);
+            ps0 = ppcx_gqr_dequant((s32)(s16)(u16)(pair >> 16), scale);
+            ps1 = ppcx_gqr_dequant((s32)(s16)(u16)pair, scale);
+        }
+        break;
+    default:
+        /* Types 1..3 are invalid: the reference leaves both lanes zero. */
+        break;
+    }
+    c->fpr[frd & 31u].ps0.d = ps0;
+    c->fpr[frd & 31u].ps1.d = ps1;
+}
+
+/* psq_st/psq_stu/psq_stx/psq_stux: quantize FPR `frs` and store. */
+static inline void ppcx_psq_st(Cpu *c, u32 ea, u32 i, u32 w, u32 frs, u32 addr) {
+    const u32 gqr = c->gqr[i & 7u];
+    const u32 type = ppcx_gqr_st_type(gqr);
+    const int scale = ppcx_gqr_signed_scale(ppcx_gqr_st_scale(gqr));
+    const double ps0 = c->fpr[frs & 31u].ps0.d;
+    const double ps1 = c->fpr[frs & 31u].ps1.d;
+    if ((c->hid2 & PPCX_HID2_LSQE) == 0u) {
+        ppcx_trap(c, addr, "psq_st without HID2.LSQE");
+        return;
+    }
+    switch (type) {
+    case 0: /* float: FTZ (stores a signed zero in the subnormal range) */
+        ppcx_wr32(ea, ppcx_single_bits_from_bits_ftz(c->fpr[frs & 31u].ps0.u));
+        if (!w) ppcx_wr32(ea + 4u, ppcx_single_bits_from_bits_ftz(c->fpr[frs & 31u].ps1.u));
+        break;
+    case 4: { /* u8 */
+        const s32 a = ppcx_gqr_quant(ps0, scale, 0, 255);
+        if (w) ppcx_wr8(ea, (u8)a);
+        else {
+            const s32 b = ppcx_gqr_quant(ps1, scale, 0, 255);
+            ppcx_wr16(ea, (u16)(((u32)a << 8) | (u32)b));
+        }
+        break;
+    }
+    case 5: { /* u16 */
+        const s32 a = ppcx_gqr_quant(ps0, scale, 0, 65535);
+        if (w) ppcx_wr16(ea, (u16)a);
+        else {
+            const s32 b = ppcx_gqr_quant(ps1, scale, 0, 65535);
+            ppcx_wr32(ea, ((u32)a << 16) | (u32)b);
+        }
+        break;
+    }
+    case 6: { /* s8 */
+        const s32 a = ppcx_gqr_quant(ps0, scale, -128, 127);
+        if (w) ppcx_wr8(ea, (u8)(a & 0xff));
+        else {
+            const s32 b = ppcx_gqr_quant(ps1, scale, -128, 127);
+            ppcx_wr16(ea, (u16)(((u32)(a & 0xff) << 8) | (u32)(b & 0xff)));
+        }
+        break;
+    }
+    case 7: { /* s16 */
+        const s32 a = ppcx_gqr_quant(ps0, scale, -32768, 32767);
+        if (w) ppcx_wr16(ea, (u16)(a & 0xffff));
+        else {
+            const s32 b = ppcx_gqr_quant(ps1, scale, -32768, 32767);
+            ppcx_wr32(ea, ((u32)(a & 0xffff) << 16) | (u32)(b & 0xffff));
+        }
+        break;
+    }
+    default:
+        /* Types 1..3 are invalid: the reference does not store. */
+        break;
     }
 }
 

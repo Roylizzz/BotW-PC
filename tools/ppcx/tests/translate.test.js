@@ -93,6 +93,32 @@ test("substitutes address-taken imports (HA/LO pair)", () => {
     assert.match(r.code, /c->gpr\[3\] = c->gpr\[3\] \+ \(u32\)\(s32\)\(PPCX_IMPORT_ADDR\(3\) & 0xffffu\);/);
 });
 
+test("translates psq loads and stores with the displacement EA", () => {
+    const lu = (57 << 26) | (3 << 21) | (4 << 16) | (1 << 15) | (5 << 12) | ((-8) & 0xfff);
+    const r = translate([lu, 0x4e800020]);
+    assert.match(r.code, /ea = \(u32\)\(c->gpr\[4\] \+ 0xfffffff8u\);/);
+    const update = r.code.indexOf("c->gpr[4] = ea;");
+    const call = r.code.indexOf("ppcx_psq_l(c, ea, 5u, 1u, 3u, 0x00001000u);");
+    assert.ok(update >= 0 && call > update, "the rA update happens before the load");
+
+    const l = (56 << 26) | (2 << 21) | 0x100; // psq_l f2, 0x100(r0)
+    const r2 = translate([l, 0x4e800020]);
+    assert.match(r2.code, /ppcx_psq_l\(c, 0x100u, 0u, 0u, 2u, 0x00001000u\);/);
+    assert.doesNotMatch(r2.code, /c->gpr\[0\] = ea;/);
+});
+
+test("translates indexed psq forms", () => {
+    const stx = (4 << 26) | (2 << 21) | (4 << 16) | (5 << 11) | (7 << 1); // psq_stx f2, r4, r5
+    const r = translate([stx, 0x4e800020]);
+    assert.match(r.code, /ppcx_psq_st\(c, \(u32\)\(c->gpr\[4\] \+ c->gpr\[5\]\), 0u, 0u, 2u, 0x00001000u\);/);
+
+    const lux = (4 << 26) | (2 << 21) | (4 << 16) | (5 << 11) | (38 << 1); // psq_lux f2, r4, r5
+    const r2 = translate([lux, 0x4e800020]);
+    assert.match(r2.code, /ea = \(u32\)\(c->gpr\[4\] \+ c->gpr\[5\]\);/);
+    assert.match(r2.code, /c->gpr\[4\] = ea;/);
+    assert.match(r2.code, /ppcx_psq_l\(c, ea, 0u, 0u, 2u, 0x00001000u\);/);
+});
+
 test("conditional branches to local targets become goto + label", () => {
     const r = translate([0x2c030000, 0x40820008, 0x60000000, 0x4e800020]);
     assert.match(r.code, /if \(ppcx_bc\(c, 0x4u, 0x2u\)\) goto L_0000100C;/);

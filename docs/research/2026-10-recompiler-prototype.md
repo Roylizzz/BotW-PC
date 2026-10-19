@@ -39,14 +39,13 @@ first GX2 frame?
      this execution model because every register lives in one shared `Cpu`.
    - Translation ranges use the union of both sets: **200,900 starts**.
 
-3. **Instruction coverage** (9,248,515 words): **97.71% supported**
-   (9,037,035), 2.29% known-but-unsupported (211,416), 0.00% unknown/data
-   (64). Re-measured on 2026-10-18 with the corrected decoder; the earlier
-   97.00% / 2.96% / 0.04% snapshot predated both the audit fixes and the
-   completed block-move/estimate support. The unsupported mass is two
-   instructions — `psq_l` 118,005 and `psq_st` 93,411 — plus a 64-word
-   unknown/data tail (`invalid-0` 47, `op31-xo375` 11, `op0` 6).
-   Implementing the paired-single memory ops lifts coverage above 99.9%.
+3. **Instruction coverage** (9,248,515 words): **99.9993% supported**
+   (9,248,451), no known-unsupported instructions, 0.0007% unknown/data
+   (64: `invalid-0` 47, `op31-xo375` 11, `op0` 6). Re-measured on
+   2026-10-19 after implementing the quantized paired-single loads/stores,
+   the last known-unsupported block (`psq_l` 118,005 + `psq_st` 93,411 =
+   211,416 words in this module). Earlier snapshots: 97.71% / 2.29% / 0.00%
+   (post-audit) and 97.00% / 2.96% / 0.04% (pre-fix).
 
 4. **Import model validated on the real module.** 445 slots (437 functions,
    8 data). 16,682 REL24 sites split into **16,522 `bl` calls and 160 `b`
@@ -99,19 +98,38 @@ first GX2 frame?
    zero-extension, r0-as-literal in `addic`/`subfic`/`cmpi`/`cmpli`,
    `lwsync` codegen, `neg` carry, OE=1 decoding, divide edge cases, OE
    operand aliasing, `nego` overflow). Verification: 185 compiled synthetic
-   programs compared against an independent oracle, every fix re-introduced
-   as a mutation and caught (10/10), 94 automated tests green, and the
+   programs compared against an independent oracle (221 today, including the
+   paired-single cases below), every fix re-introduced as a mutation and
+   caught (10/10), 94 automated tests green at the time (97 today), and the
    coverage table above re-measured. v208 itself contains no OE=1
    instruction, no `bcl` with LK and no `lwsync`, so those defects were
    latent in this title; the rotate-mask fix still affects 194,957
    instructions the module executes. See
    [the audit](../audits/2026-10-18-code-audit.md).
 
+9. **Quantized paired-single load/store (2026-10-19).** The last
+   known-unsupported block is implemented: `psq_l`/`psq_lu`/`psq_st`/
+   `psq_stu` and the indexed `psq_lx`/`psq_stx`/`psq_lux`/`psq_stux` decode,
+   translate and execute. GQR0–7 (SPR 912–919) and HID2 (SPR 920, `LSQE`)
+   are part of `Cpu`; loads dequantize with `2^-scale`, stores quantize with
+   `2^scale`, clamp to the type range and truncate toward zero, and float
+   stores follow the reference flush-to-zero rule for single-subnormal
+   results. Since v208 never writes HID2 or the GQRs but executes 211,416
+   `psq_*` instructions, the model boots with `LSQE=1` and all-zero GQRs
+   (float quantization) — a documented assumption, not an observation.
+   The differential harness grew to 221 compiled programs / 907 state
+   lines: it now compares raw-bit FPR lanes plus the GQR/HID2 state on every
+   case and includes 36 new paired-single cases (all quantize types, both
+   scale signs, paired and unpaired `W` forms, indexed addressing, update
+   forms, clamping, truncation and FTZ corners). See
+   [the audit](../audits/2026-10-18-code-audit.md).
+
 ## Evidence quality
 
 - **Observed:** all metrics above, produced by our tools on our own copy
-  (coverage re-measured 2026-10-18 after the audit fixes); the Ghidra
-  census is a local comparison artifact only.
+  (coverage re-measured 2026-10-19 after the paired-single implementation;
+  the 2026-10-18 audit checkpoint read 97.71%); the Ghidra census is a
+  local comparison artifact only.
 - **Derived:** the interpretation of `.rodata` ADDR32 entries as code
   pointers (validated by sampling), and the tail-call reading of
   `b`-to-import sites (decided by the relocation, not by the stored field).
@@ -131,7 +149,8 @@ first GX2 frame?
   `FUN_02c5e5f4` → … → `FUN_0309bbb0`, the only `GX2Init` site at
   `0x0309BC80`) with dispatch tracing, then model GX2 calls as
   log-only no-ops and count frames before attempting any real rendering.
-- **Opcode gaps:** `psq_l`/`psq_st` — the entire remaining 2.29%
-  known-unsupported mass.
+- **Opcode gaps:** none left that the game executes. The remaining 64
+  unknown/data words (47 zero words, 11 `op31-xo375`, 6 `op0`) need a
+  manual review for false decodes or embedded data.
 - **Scale test:** a `--follow` stress run from the entry point to measure
   translation throughput and generated-code size for the full closure.

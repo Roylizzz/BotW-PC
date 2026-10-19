@@ -68,15 +68,17 @@ test("reports full coverage on an all-supported fixture", () => {
 
 test("counts unsupported and unknown words", () => {
     const { buf, parsed } = buildFixture();
-    // psq_l at 0x1004 (known but unsupported) and op 2 at 0x1008 (unknown).
-    buf.writeUInt32BE(((56 << 26) | (1 << 21)) >>> 0, TEXT_OFFSET + 4);
+    // fctid at 0x1004 (known but unsupported), op 2 at 0x1008 (unknown) and
+    // an implemented psq_l at 0x100C (counts as supported).
+    buf.writeUInt32BE(0xfc00065c, TEXT_OFFSET + 4);
     buf.writeUInt32BE(0x08000000, TEXT_OFFSET + 8);
+    buf.writeUInt32BE(((56 << 26) | (1 << 21)) >>> 0, TEXT_OFFSET + 12);
     const a = analyzeRpx(buf, parsed);
     assert.equal(a.coverage.unsupported, 1);
     assert.equal(a.coverage.unknown, 1);
     assert.equal(a.coverage.supported, TEXT_SIZE / 4 - 2);
     const top = new Map(a.coverage.topUnsupported);
-    assert.equal(top.get("psq_l"), 1);
+    assert.equal(top.get("fctid"), 1);
 });
 
 test("accepts a custom text section name", () => {

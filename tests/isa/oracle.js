@@ -62,6 +62,9 @@ function newState() {
         ctr: 0,
         xer: 0,
         resv: 0xffffffff,
+        fpr: new Float64Array(64), // ps0/ps1 per register, as exact single values
+        gqr: new Uint32Array(8),
+        hid2: 0,
         mem: new Uint8Array(ARENA),
     };
 }
@@ -253,9 +256,12 @@ function step(s, w, onUnsupported) {
 
         case 19: return step19(s, w, onUnsupported);
         case 31: return step31(s, w, onUnsupported);
-        case 56: case 57: case 60: case 61:
-            unsupported(onUnsupported, "psq", w);
+        case 4:
+            if (PSQ_INDEXED_SUB6.has((w >>> 1) & 0x3f)) return stepPsq(s, w, onUnsupported);
+            unsupported(onUnsupported, "op4", w);
             return;
+        case 56: case 57: case 60: case 61:
+            return stepPsq(s, w, onUnsupported);
         default:
             unsupported(onUnsupported, "op" + op, w);
     }
@@ -285,6 +291,172 @@ function updStore(s, w, v) {
     if (w >>> 26 === 37) wr32(s, ea, u32(v));
     else wr16(s, ea, v);
     s.gpr[RA(w)] = ea;
+}
+
+/* ------------------------------------------------------------------ */
+/* Quantized paired-single load/store                                  */
+/* ------------------------------------------------------------------ */
+
+/* Indexed forms: opcode 4 with a 6-bit sub-opcode in bits 25..30. */
+const PSQ_INDEXED_SUB6 = new Set([6, 7, 38, 39]);
+
+/* GQR quantize types: 0 float, 1..3 invalid, 4 u8, 5 u16, 6 s8, 7 s16. */
+const PSQ_TYPE_RANGE = {
+    4: { lo: 0, hi: 255 },
+    5: { lo: 0, hi: 65535 },
+    6: { lo: -128, hi: 127 },
+    7: { lo: -32768, hi: 32767 },
+};
+
+const f32buf = new DataView(new ArrayBuffer(4));
+const f32 = (bits) => {
+    f32buf.setUint32(0, u32(bits));
+    return f32buf.getFloat32(0);
+};
+
+const f64buf = new DataView(new ArrayBuffer(8));
+function f64bits(v) {
+    f64buf.setFloat64(0, v);
+    return f64buf.getBigUint64(0);
+}
+
+/* Single bits of an exact-single value; NaN prints canonically, matching the
+ * generated C helper. */
+function fprBits(v) {
+    if (Number.isNaN(v)) return 0x7fc00000;
+    f32buf.setFloat32(0, v);
+    return f32buf.getUint32(0);
+}
+
+/* ConvertToSingleFTZ of the reference emulator (float-typed psq_st). */
+function singleBitsFTZ(v) {
+    const bits = f64bits(v);
+    const exp = Number((bits >> 52n) & 0x7ffn);
+    if (exp > 896 || (bits & 0x7fffffffffffffffn) === 0n) {
+        return Number(((bits >> 32n) & 0xc0000000n) | ((bits >> 29n) & 0x3fffffffn));
+    }
+    return Number((bits >> 32n) & 0x80000000n);
+}
+
+/* Scale, clamp to the type range and truncate toward zero. A NaN operand is
+ * undefined in the reference; this model maps it to the type minimum. */
+function psqQuant(ps, type, factor) {
+    const range = PSQ_TYPE_RANGE[type];
+    const conv = Math.fround(ps * factor);
+    if (Number.isNaN(conv)) return range.lo;
+    return Math.trunc(Math.min(Math.max(conv, range.lo), range.hi));
+}
+
+const s8v = (x) => (x << 24) >> 24;
+const s16v = (x) => (x << 16) >> 16;
+
+/* Raw element values of a load: singles for the float type, integers for the
+ * quantized types, ps1 = 1 for the unpaired forms. */
+function psqRaw(s, ea, type, wBit) {
+    switch (type) {
+        case 0: return [f32(rd32(s, ea)), wBit ? 1 : f32(rd32(s, ea + 4))];
+        case 4: {
+            if (wBit) return [rd8(s, ea), 1];
+            const pair = rd16(s, ea);
+            return [pair >>> 8, pair & 0xff];
+        }
+        case 5: {
+            if (wBit) return [rd16(s, ea), 1];
+            const pair = rd32(s, ea);
+            return [pair >>> 16, pair & 0xffff];
+        }
+        case 6: {
+            if (wBit) return [s8v(rd8(s, ea)), 1];
+            const pair = rd16(s, ea);
+            return [s8v(pair >>> 8), s8v(pair & 0xff)];
+        }
+        case 7: {
+            if (wBit) return [s16v(rd16(s, ea)), 1];
+            const pair = rd32(s, ea);
+            return [s16v(pair >>> 16), s16v(pair & 0xffff)];
+        }
+        default:
+            return [0, 0]; // types 1..3 are invalid: both lanes read as zero
+    }
+}
+
+function stepPsq(s, w, onUnsupported) {
+    const op = w >>> 26;
+    let ea;
+    let fd;
+    let ra;
+    let i;
+    let wBit;
+    let update;
+    let load;
+    if (op === 4) {
+        const sub6 = (w >>> 1) & 0x3f;
+        fd = (w >>> 21) & 0x1f;
+        ra = (w >>> 16) & 0x1f;
+        i = (w >>> 7) & 7;
+        wBit = (w >>> 10) & 1;
+        update = sub6 === 38 || sub6 === 39;
+        load = sub6 === 6 || sub6 === 38;
+        ea = u32((update || ra !== 0 ? s.gpr[ra] : 0) + s.gpr[(w >>> 11) & 0x1f]);
+    } else {
+        fd = (w >>> 21) & 0x1f;
+        ra = (w >>> 16) & 0x1f;
+        i = (w >>> 12) & 7;
+        wBit = (w >>> 15) & 1;
+        update = op === 57 || op === 61;
+        load = op === 56 || op === 57;
+        const d = (w << 20) >> 20;
+        ea = u32((update || ra !== 0 ? s.gpr[ra] : 0) + d);
+    }
+    if ((s.hid2 & 0x80000000) === 0) {
+        unsupported(onUnsupported, "psq-lsqe0", w);
+        return;
+    }
+    const gqr = s.gqr[i];
+    if (load) {
+        const type = (gqr >>> 16) & 7;
+        const scale6 = (gqr >>> 24) & 63;
+        const scale = scale6 >= 32 ? scale6 - 64 : scale6;
+        const raw = psqRaw(s, ea, type, wBit);
+        if (type === 0) {
+            s.fpr[2 * fd] = raw[0];
+            s.fpr[2 * fd + 1] = raw[1];
+        } else if (type >= 4) {
+            const f = 2 ** -scale;
+            s.fpr[2 * fd] = Math.fround(raw[0] * f);
+            s.fpr[2 * fd + 1] = wBit ? 1 : Math.fround(raw[1] * f);
+        } else {
+            s.fpr[2 * fd] = 0;
+            s.fpr[2 * fd + 1] = 0;
+        }
+        if (update) s.gpr[ra] = ea;
+    } else {
+        const type = gqr & 7;
+        const scale6 = (gqr >>> 8) & 63;
+        const scale = scale6 >= 32 ? scale6 - 64 : scale6;
+        const ps0 = s.fpr[2 * fd];
+        const ps1 = s.fpr[2 * fd + 1];
+        if (type === 0) {
+            if (wBit) {
+                wr32(s, ea, singleBitsFTZ(ps0));
+            } else {
+                wr32(s, ea, singleBitsFTZ(ps0));
+                wr32(s, ea + 4, singleBitsFTZ(ps1));
+            }
+        } else if (type >= 4) {
+            const factor = 2 ** scale;
+            const a = psqQuant(ps0, type, factor);
+            if (wBit) {
+                if (type === 4 || type === 6) wr8(s, ea, a & 0xff);
+                else wr16(s, ea, a & 0xffff);
+            } else {
+                const b = psqQuant(ps1, type, factor);
+                if (type === 4 || type === 6) wr16(s, ea, ((a & 0xff) << 8) | (b & 0xff));
+                else wr32(s, ea, ((a & 0xffff) << 16) | (b & 0xffff));
+            }
+        }
+        if (update) s.gpr[ra] = ea;
+    }
 }
 
 function step19(s, w) {
@@ -596,7 +768,10 @@ function mfspr(s, spr) {
         case 1: return s.xer;
         case 8: return s.lr;
         case 9: return s.ctr;
-        default: return 0;
+        default:
+            if (spr >= 912 && spr <= 919) return s.gqr[spr - 912];
+            if (spr === 920) return s.hid2;
+            return 0;
     }
 }
 
@@ -605,7 +780,10 @@ function mtspr(s, spr, v) {
         case 1: s.xer = u32(v); break;
         case 8: s.lr = u32(v); break;
         case 9: s.ctr = u32(v); break;
-        default: break;
+        default:
+            if (spr >= 912 && spr <= 919) s.gqr[spr - 912] = u32(v);
+            else if (spr === 920) s.hid2 = u32(v);
+            break;
     }
 }
 
@@ -625,6 +803,13 @@ function evaluate(caseDef) {
     if (init.cr !== undefined) s.cr = u32(init.cr);
     if (init.lr !== undefined) s.lr = u32(init.lr);
     if (init.ctr !== undefined) s.ctr = u32(init.ctr);
+    s.hid2 = init.hid2 !== undefined ? u32(init.hid2) : 0x80000000; // modelled boot state
+    if (init.gqr) for (const [k, v] of Object.entries(init.gqr)) s.gqr[k >>> 0] = u32(v);
+    if (init.fpr)
+        for (const [k, v] of Object.entries(init.fpr)) {
+            s.fpr[2 * (k >>> 0)] = f32(v[0]);
+            s.fpr[2 * (k >>> 0) + 1] = f32(v[1]);
+        }
     for (const ch of caseDef.mem || []) {
         const bytes = Buffer.from(ch.hex, "hex");
         for (let i = 0; i < bytes.length; i++) s.mem[ch.addr + i] = bytes[i];
@@ -643,6 +828,11 @@ function evaluate(caseDef) {
     lines.push(
         `xer ${s.xer.toString(16).padStart(8, "0")} cr ${s.cr.toString(16).padStart(8, "0")} ` +
             `lr ${s.lr.toString(16).padStart(8, "0")} ctr ${s.ctr.toString(16).padStart(8, "0")}`
+    );
+    lines.push(`fpr ${Array.from(s.fpr).map((v) => fprBits(v).toString(16).padStart(8, "0")).join(" ")}`);
+    lines.push(
+        `gqr ${Array.from(s.gqr).map((v) => v.toString(16).padStart(8, "0")).join(" ")} ` +
+            `hid2 ${s.hid2.toString(16).padStart(8, "0")}`
     );
     for (const { addr, len } of caseDef.dump || []) {
         let hex = "";
