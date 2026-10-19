@@ -21,6 +21,11 @@
  *     region and writes to a read-only region;
  *   - hook mode: the registered fault hook runs before the exit, for both
  *     kinds of fault;
+ *   - HLE mode: the memory/cache models in ppcx_hle.c run with the real
+ *     region map installed and preserve their documented copy/fill/block
+ *     semantics; dedicated child processes then check that a read-only
+ *     destination, an unmapped destination/source and a read-only DCZeroRange
+ *     block stop with the same deterministic diagnostics;
  *   - determinism: the same fault twice produces byte-identical output.
  *
  * `node tests/mem/run.js` exits non-zero on mismatch. Compiler discovery is
@@ -37,6 +42,7 @@ const { findCompiler } = require("../isa/run.js");
 const ROOT = path.resolve(__dirname, "..", "..");
 const RUNTIME_INCLUDE = path.join(ROOT, "src", "runtime", "include");
 const RUNTIME_MEM_SRC = path.join(ROOT, "src", "runtime", "src", "ppcx_mem.c");
+const RUNTIME_HLE_SRC = path.join(ROOT, "src", "runtime", "src", "ppcx_hle.c");
 
 /* Regions installed by setup(): stack [0x70000,0x80000), b [0x22000,0x23000),
  * data [0x10000,0x20000) and the read-only ro [0x24000,0x25000). The arena is
@@ -218,10 +224,122 @@ function buildFaults() {
     ];
 }
 
-function buildDriver(raw, basic, faults) {
+function buildHle() {
+    const code = [];
+    const expected = [];
+    const stmt = (s) => code.push(`    ${s}`);
+    const line = (s, exp) => {
+        code.push(`    ${s}`);
+        expected.push(exp);
+    };
+
+    code.push("    Cpu cpu;");
+    code.push("    unsigned k;");
+    stmt("ppcx_wr32(0x00010000u, 0x11223344u);");
+    stmt("ppcx_wr32(0x00010004u, 0x55667788u);");
+
+    /* OSBlockMove(dst, src, size, flush): memmove-like, dst returned in r3. */
+    stmt("memset(&cpu, 0, sizeof cpu);");
+    stmt("cpu.gpr[3] = 0x00011000u; cpu.gpr[4] = 0x00010000u; cpu.gpr[5] = 8u; cpu.gpr[6] = 1u;");
+    line('printf("hle-move=%d\\n", ppcx_hle_dispatch_named(&cpu, "coreinit.OSBlockMove"));', "hle-move=1");
+    line('printf("hle-move-r3=%08X\\n", (unsigned)cpu.gpr[3]);', "hle-move-r3=00011000");
+    line(
+        'printf("hle-move-data=%08X%08X\\n", (unsigned)ppcx_rd32(0x00011000u), (unsigned)ppcx_rd32(0x00011004u));',
+        "hle-move-data=1122334455667788"
+    );
+
+    /* Overlap (dst > src and dst < src+size) must still preserve the bytes. */
+    code.push("    for (k = 0; k < 8; k++) ppcx_wr8(0x00010020u + k, (u8)k);");
+    stmt("cpu.gpr[3] = 0x00010024u; cpu.gpr[4] = 0x00010020u; cpu.gpr[5] = 8u;");
+    line('printf("hle-overlap=%d\\n", ppcx_hle_dispatch_named(&cpu, "coreinit.OSBlockMove"));', "hle-overlap=1");
+    line(
+        'printf("hle-overlap-data=%08X%08X\\n", (unsigned)ppcx_rd32(0x00010024u), (unsigned)ppcx_rd32(0x00010028u));',
+        "hle-overlap-data=0001020304050607"
+    );
+
+    /* OSBlockSet(dst, u8 value, size): dst returned in r3. */
+    stmt("cpu.gpr[3] = 0x00012000u; cpu.gpr[4] = 0x5Au; cpu.gpr[5] = 4u;");
+    line('printf("hle-set=%d\\n", ppcx_hle_dispatch_named(&cpu, "coreinit.OSBlockSet"));', "hle-set=1");
+    line('printf("hle-set-r3=%08X\\n", (unsigned)cpu.gpr[3]);', "hle-set-r3=00012000");
+    line('printf("hle-set-data=%08X\\n", (unsigned)ppcx_rd32(0x00012000u));', "hle-set-data=5A5A5A5A");
+
+    /* memcpy/memset share the same return and truncation contracts. */
+    stmt("cpu.gpr[3] = 0x00012100u; cpu.gpr[4] = 0x00010000u; cpu.gpr[5] = 4u;");
+    line('printf("hle-memcpy=%d\\n", ppcx_hle_dispatch_named(&cpu, "coreinit.memcpy"));', "hle-memcpy=1");
+    line('printf("hle-memcpy-r3=%08X\\n", (unsigned)cpu.gpr[3]);', "hle-memcpy-r3=00012100");
+    line('printf("hle-memcpy-data=%08X\\n", (unsigned)ppcx_rd32(0x00012100u));', "hle-memcpy-data=11223344");
+    stmt("cpu.gpr[3] = 0x00012200u; cpu.gpr[4] = 0x1ABu; cpu.gpr[5] = 2u;");
+    line('printf("hle-memset=%d\\n", ppcx_hle_dispatch_named(&cpu, "coreinit.memset"));', "hle-memset=1");
+    line('printf("hle-memset-r3=%08X\\n", (unsigned)cpu.gpr[3]);', "hle-memset-r3=00012200");
+    line('printf("hle-memset-data=%04X\\n", (unsigned)ppcx_rd16(0x00012200u));', "hle-memset-data=ABAB");
+
+    /* DCZeroRange(addr, size) zeroes the containing 0x20-byte block once. */
+    code.push("    for (k = 0; k < 0x40; k++) ppcx_wr8(0x00012300u + k, 0xFFu);");
+    stmt("cpu.gpr[3] = 0x00012301u; cpu.gpr[4] = 1u;");
+    line('printf("hle-zero=%d\\n", ppcx_hle_dispatch_named(&cpu, "coreinit.DCZeroRange"));', "hle-zero=1");
+    line('printf("hle-zero-head=%08X\\n", (unsigned)ppcx_rd32(0x00012300u));', "hle-zero-head=00000000");
+    line('printf("hle-zero-tail=%08X\\n", (unsigned)ppcx_rd32(0x00012320u));', "hle-zero-tail=FFFFFFFF");
+
+    /* Cache maintenance is a typed no-op on the coherent flat arena. */
+    stmt("ppcx_wr32(0x00012400u, 0xDEADBEEFu);");
+    stmt("cpu.gpr[3] = 0x00012400u; cpu.gpr[4] = 4u;");
+    line('printf("hle-flush=%d\\n", ppcx_hle_dispatch_named(&cpu, "coreinit.DCFlushRange"));', "hle-flush=1");
+    line('printf("hle-flush-nosync=%d\\n", ppcx_hle_dispatch_named(&cpu, "coreinit.DCFlushRangeNoSync"));', "hle-flush-nosync=1");
+    line('printf("hle-invalidate=%d\\n", ppcx_hle_dispatch_named(&cpu, "coreinit.DCInvalidateRange"));', "hle-invalidate=1");
+    line('printf("hle-barrier=%d\\n", ppcx_hle_dispatch_named(&cpu, "coreinit.OSMemoryBarrier"));', "hle-barrier=1");
+    line('printf("hle-flush-data=%08X\\n", (unsigned)ppcx_rd32(0x00012400u));', "hle-flush-data=DEADBEEF");
+
+    /* Reading a read-only region through HLE is allowed. */
+    stmt("cpu.gpr[3] = 0x00012500u; cpu.gpr[4] = 0x00024000u; cpu.gpr[5] = 4u;");
+    line('printf("hle-ro-src=%d\\n", ppcx_hle_dispatch_named(&cpu, "coreinit.OSBlockMove"));', "hle-ro-src=1");
+    line('printf("hle-ro-data=%08X\\n", (unsigned)ppcx_rd32(0x00012500u));', "hle-ro-data=00000000");
+
+    line('printf("hle-unknown=%d\\n", ppcx_hle_dispatch_named(&cpu, "coreinit.OSBlockMoveX"));', "hle-unknown=0");
+    return { code, expected };
+}
+
+function buildHleFaults() {
+    return [
+        {
+            id: "hle-move-dst-readonly",
+            stmt:
+                "Cpu cpu; memset(&cpu, 0, sizeof cpu); " +
+                "cpu.gpr[3] = 0x00024000u; cpu.gpr[4] = 0x00010000u; cpu.gpr[5] = 4u; " +
+                'ppcx_hle_dispatch_named(&cpu, "coreinit.OSBlockMove");',
+            line: permLine(4, 0x00024000, "ro", REGION_RO, REGION_RO_SIZE),
+        },
+        {
+            id: "hle-set-unmapped",
+            stmt:
+                "Cpu cpu; memset(&cpu, 0, sizeof cpu); " +
+                "cpu.gpr[3] = 0x00023000u; cpu.gpr[4] = 1u; cpu.gpr[5] = 4u; " +
+                'ppcx_hle_dispatch_named(&cpu, "coreinit.OSBlockSet");',
+            line: faultLine("write", 4, 0x00023000),
+        },
+        {
+            id: "hle-move-src-unmapped",
+            stmt:
+                "Cpu cpu; memset(&cpu, 0, sizeof cpu); " +
+                "cpu.gpr[3] = 0x00010000u; cpu.gpr[4] = 0x00023000u; cpu.gpr[5] = 4u; " +
+                'ppcx_hle_dispatch_named(&cpu, "coreinit.OSBlockMove");',
+            line: faultLine("read", 4, 0x00023000),
+        },
+        {
+            id: "hle-zero-readonly-block",
+            stmt:
+                "Cpu cpu; memset(&cpu, 0, sizeof cpu); " +
+                "cpu.gpr[3] = 0x00024001u; cpu.gpr[4] = 1u; " +
+                'ppcx_hle_dispatch_named(&cpu, "coreinit.DCZeroRange");',
+            line: permLine(32, 0x00024000, "ro", REGION_RO, REGION_RO_SIZE),
+        },
+    ];
+}
+
+function buildDriver(raw, basic, hle, hleFaults, faults) {
     const out = [];
     out.push("/* Generated by tests/mem/run.js. Synthetic data only. */");
     out.push('#include "ppcx_mem.h"');
+    out.push('#include "ppcx_hle.h"');
     out.push("#include <stdio.h>");
     out.push("#include <stdlib.h>");
     out.push("#include <string.h>");
@@ -255,6 +373,13 @@ function buildDriver(raw, basic, faults) {
     out.push("        return 0;");
     out.push("    }");
     out.push("    setup();");
+    out.push('    if (strcmp(mode, "hle") == 0) {');
+    out.push(...hle.code);
+    out.push("        return 0;");
+    out.push("    }");
+    hleFaults.forEach((f) => {
+        out.push(`    if (strcmp(mode, "${f.id}") == 0) { ${f.stmt} return 0; }`);
+    });
     out.push('    if (strcmp(mode, "basic") == 0) {');
     out.push(...basic.code);
     out.push("        return 0;");
@@ -293,8 +418,10 @@ function buildDriver(raw, basic, faults) {
 function runCompiled(compiler, workDir) {
     const raw = buildRaw();
     const basic = buildBasic();
+    const hle = buildHle();
+    const hleFaults = buildHleFaults();
     const faults = buildFaults();
-    const source = buildDriver(raw, basic, faults);
+    const source = buildDriver(raw, basic, hle, hleFaults, faults);
 
     const srcPath = path.join(workDir, "mem_harness.c");
     const exePath = path.join(workDir, process.platform === "win32" ? "mem_harness.exe" : "mem_harness");
@@ -302,7 +429,7 @@ function runCompiled(compiler, workDir) {
 
     const args = [];
     if (!/(^|[\\/])tcc(\.exe)?$/i.test(compiler)) args.push("-std=c11", "-O0", "-Wall");
-    args.push("-I", RUNTIME_INCLUDE, "-o", exePath, RUNTIME_MEM_SRC, srcPath);
+    args.push("-I", RUNTIME_INCLUDE, "-o", exePath, RUNTIME_MEM_SRC, RUNTIME_HLE_SRC, srcPath);
     const compile = spawnSync(compiler, args, { encoding: "utf8" });
     if (compile.status !== 0) {
         throw new Error(
@@ -338,6 +465,37 @@ function runCompiled(compiler, workDir) {
             if (basic.expected[i] !== actual[i]) {
                 failures.push({ id: `basic line ${i}`, detail: `${basic.expected[i]} != ${actual[i]}` });
             }
+        }
+    }
+
+    /* HLE mode: memory/cache models under the real region map. */
+    const hleRun = run(["hle"]);
+    if (hleRun.status !== 0) {
+        failures.push({ id: "hle", detail: `exited with ${hleRun.status}: ${hleRun.stderr}` });
+    } else {
+        const actual = lines(hleRun.stdout);
+        for (let i = 0; i < Math.max(hle.expected.length, actual.length); i++) {
+            if (hle.expected[i] !== actual[i]) {
+                failures.push({ id: `hle line ${i}`, detail: `${hle.expected[i]} != ${actual[i]}` });
+            }
+        }
+    }
+
+    /* HLE fault mode: one process per rejected operation, exit 9, exact
+     * diagnostic and no stdout (the model validates before touching memory). */
+    for (const f of hleFaults) {
+        const r = run([f.id]);
+        const stderr = lines(r.stderr);
+        if (r.status !== 9) {
+            failures.push({ id: f.id, detail: `exit ${r.status} instead of 9 (stderr: ${stderr.join(" | ")})` });
+            continue;
+        }
+        if (stderr.length !== 1 || stderr[0] !== f.line) {
+            failures.push({ id: f.id, detail: `stderr ${JSON.stringify(stderr)} != ${JSON.stringify([f.line])}` });
+        }
+        const stdout = lines(r.stdout);
+        if (stdout.length !== 0) {
+            failures.push({ id: f.id, detail: `unexpected stdout ${JSON.stringify(stdout)}` });
         }
     }
 
@@ -406,15 +564,17 @@ function runCompiled(compiler, workDir) {
 
     return {
         basicLines: lines(basicRun.stdout).length,
+        hleLines: lines(hleRun.stdout).length,
         rawLines: lines(rawRun.stdout).length,
         faultCases: faults.length,
+        hleFaultCases: hleFaults.length,
         failures,
     };
 }
 
 function runMem(opts = {}) {
     const compiler = opts.compiler !== undefined ? opts.compiler : findCompiler();
-    if (!compiler) return { compiler: null, basicLines: 0, rawLines: 0, faultCases: 0, failures: [], skipped: true };
+    if (!compiler) return { compiler: null, basicLines: 0, hleLines: 0, rawLines: 0, faultCases: 0, hleFaultCases: 0, failures: [], skipped: true };
     const workDir = opts.workDir || fs.mkdtempSync(path.join(os.tmpdir(), "ppcx-mem-"));
     const res = runCompiled(compiler, workDir);
     return { compiler, workDir, ...res };
@@ -427,8 +587,9 @@ function main() {
         return 0;
     }
     console.log(
-        `mem: basic ${res.basicLines} lines, raw ${res.rawLines} lines, ${res.faultCases} fault cases, ` +
-            `hook and determinism checks, compiled with ${res.compiler}`
+        `mem: basic ${res.basicLines} lines, HLE ${res.hleLines} lines, raw ${res.rawLines} lines, ` +
+            `${res.faultCases} fault cases, ${res.hleFaultCases} HLE fault cases, hook and determinism checks, ` +
+            `compiled with ${res.compiler}`
     );
     if (!res.failures.length) {
         console.log("mem: OK, checked accesses match the mapped regions and faults stop deterministically");

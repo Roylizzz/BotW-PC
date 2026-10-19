@@ -13,7 +13,8 @@ data is required or produced.
    (`ppcx_mem_reset` for the read/write stack, then out-of-order
    `ppcx_mem_add_perm` calls for a read/write region and a read-only one)
    and exercises the model through the real guest accessors;
-2. compiles the driver together with `src/runtime/src/ppcx_mem.c` using a
+2. compiles the driver together with `src/runtime/src/ppcx_mem.c` and
+   `src/runtime/src/ppcx_hle.c` using a
    real host compiler (shared discovery: `PPCX_CC`, then
    `cc`/`gcc`/`clang`/`tcc`);
 3. checks, in separate processes:
@@ -33,12 +34,19 @@ data is required or produced.
      access is refused before touching the target address;
    * **hook mode**: the registered fault hook runs between the diagnostic
      and the exit, for an unmapped access and for a read-only write;
+   * **HLE mode**: the coreinit memory/cache models run with the region map
+     installed — `OSBlockMove` (non-overlapping, overlapping and a
+     read-only source), `OSBlockSet`, `memcpy`, `memset`, block-granular
+     `DCZeroRange`, the cache/barrier no-ops and the exact-name/unknown
+     lookup — plus four child processes where a read-only destination, an
+     unmapped destination, an unmapped source and a read-only
+     `DCZeroRange` block must each exit 9 with the exact diagnostic;
    * **determinism**: the same fault twice produces byte-identical output.
 
 Expected output:
 
 ```
-mem: basic 36 lines, raw 3 lines, 13 fault cases, hook and determinism checks, compiled with <compiler>
+mem: basic 36 lines, HLE 25 lines, raw 3 lines, 13 fault cases, 4 HLE fault cases, hook and determinism checks, compiled with <compiler>
 mem: OK, checked accesses match the mapped regions and faults stop deterministically
 ```
 

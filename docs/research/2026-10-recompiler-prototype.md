@@ -81,10 +81,11 @@ first GX2 frame?
    `PPCX_HLE_TRACE=1` logs the per-call line (`HLE unimplemented #1:
    proc_ui.ProcUIInit (import 359) [diagnostic no-op]`) and
    `PPCX_HLE_STRICT=1` stops there with the register dump and exit code 5;
-   four coreinit core-identity calls are modeled and `ProcUIInit` is not one
-   of them. This exercises decode, relocation-driven HLE substitution, the
-   tail-call convention, the dispatcher, the HLE name table and the TCC ABI
-   in one shot — and confirms the boot-path note's reading of that method.
+   13 coreinit identity and memory/cache calls are modeled and `ProcUIInit`
+   is not one of them. This exercises decode, relocation-driven HLE
+   substitution, the tail-call convention, the dispatcher, the HLE name
+   table and the TCC ABI in one shot — and confirms the boot-path note's
+   reading of that method.
 
 7. **Runtime skeleton.** One flat arena of `0xC2000000` bytes covers every
    address the module is linked for (import slots sit at `0xC0000000`);
@@ -94,7 +95,8 @@ first GX2 frame?
    `~0x105DB1C0`); unsupported instructions and unregistered targets stop
    with an address + register dump. `PPCX_HLE_TRACE=1` logs every HLE call,
    `PPCX_HLE_STRICT=1` aborts on the first unimplemented one (exit code 5);
-   four coreinit identity calls are modeled and stay available.
+   13 coreinit identity and memory/cache calls are modeled and stay
+   available.
 
 8. **Audit correction pass (2026-10-18).** An independent source audit fixed
    thirteen semantic defects in the runtime ABI, the decoder and the
@@ -105,7 +107,7 @@ first GX2 frame?
    operand aliasing, `nego` overflow). Verification: 185 compiled synthetic
    programs compared against an independent oracle (221 today, including the
    paired-single cases below), every fix re-introduced as a mutation and
-   caught (10/10), 94 automated tests green at the time (97 today), and the
+   caught (10/10), 94 automated tests green at the time (102 today), and the
    coverage table above re-measured. v208 itself contains no OE=1
    instruction, no `bcl` with LK and no `lwsync`, so those defects were
    latent in this title; the rotate-mask fix still affects 194,957
@@ -134,7 +136,7 @@ first GX2 frame?
    `.bss`, ten corrupted-blob classes (bad magic/count/table size, empty
    segment, unknown flags, arena escape, overlap, payload escape, checksum)
    and Fletcher-32 boundary probes; `node tests/loader/run.js` →
-   `loader: 50 state lines, 10 negative blobs … loader: OK`.
+   `loader: 62 state lines, 10 negative blobs, read-only write fault … loader: OK`.
 
 ## Evidence quality
 
@@ -174,14 +176,27 @@ first GX2 frame?
   `.module_id`, `.bss`, `.thrbss`; 6,140,245 bytes) and 26 read-only
   (`.text`, `.syscall`, the import tables and the allocated metadata;
   37,015,566 bytes); a write to a read-only region faults with its own
-  deterministic diagnostic and exit code 9. Executable permission is not
+  deterministic diagnostic and exit code 9. The same compiled harness now
+  links the HLE memory/cache models and checks their range validation under
+  that map. Executable permission is not
   enforced because translated code is native C and never fetches guest
   bytes. The next evidence to gather is a translated data-reading function
   running against the real image, so that any unmodelled address (heap,
   MMIO, import trampolines) faults loudly instead of returning zeroes.
-- **HLE tier 1:** coreinit (`OSGetCoreId`, `OSMemoryBarrier`,
-  `OSGetSystemTime`, `OSBlockMove/Set`, `memcpy`, `_iob`,
-  `__gh_FOPEN_MAX`), then proc_ui/padscore stubs.
+- **HLE tier 1:** the mechanical subset landed 2026-10-19 in
+  `src/runtime/src/ppcx_hle.c` — the four core-identity calls plus nine
+  flat-memory/cache primitives (`OSBlockMove` 6,834 REL24 sites + 2,
+  `memcpy` 408 + 2, `OSMemoryBarrier` 330 + 2, `OSBlockSet` 295 + 2,
+  `DCZeroRange` 119, `DCFlushRange` 77, `DCFlushRangeNoSync` 29,
+  `DCInvalidateRange` 9, `memset` 84). Each memory model validates its whole
+  range against the checked region map before touching memory (no partial
+  effects; exit code 9 on a read-only or unmapped target) and `OSBlockMove`
+  implements the documented overlap explicitly, because the local TCC's
+  `memmove` was measured to copy forward and corrupt an overlapping
+  destination (2026-10-19). Remaining tier 1 work: `OSGetSystemTime` /
+  `OSGetTime` (491 sites, clock semantics still to define), TLS
+  (`__tls_get_addr`, 3,371 sites) and the `_iob` / `__gh_FOPEN_MAX` data
+  slots; then proc_ui/padscore stubs.
 - **GX2 bootstrap:** drive the documented chain (entry `0x03C70404` →
   `FUN_02c5e5f4` → … → `FUN_0309bbb0`, the only `GX2Init` site at
   `0x0309BC80`) with dispatch tracing, then model GX2 calls as
