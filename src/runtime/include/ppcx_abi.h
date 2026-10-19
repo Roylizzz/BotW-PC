@@ -30,6 +30,7 @@
  */
 
 #include <stdint.h>
+#include <stddef.h> /* size_t for guest pointer offsets */
 #include <math.h>
 
 typedef uint8_t u8;
@@ -389,11 +390,11 @@ static inline void ppcx_srawi(Cpu *c, u32 d, u32 v, u32 sh) {
 }
 
 static inline u32 ppcx_cntlzw(u32 v) {
-    u32 n = 0;
     if (v == 0u) return 32u;
 #if defined(__GNUC__) || defined(__clang__)
     return (u32)__builtin_clz(v);
 #else
+    u32 n = 0;
     while (!(v & 0x80000000u)) { v <<= 1; n++; }
     return n;
 #endif
