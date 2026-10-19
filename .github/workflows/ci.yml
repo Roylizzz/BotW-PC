@@ -47,6 +47,17 @@ jobs:
           PPCX_CC: cc
         run: node tests/loader/run.js
 
+  coreinit-hle:
+    name: Synthetic Cafe OS HLE tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile exact-name coreinit HLE contract tests
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror -I src/runtime/include \
+            src/runtime/src/ppcx_hle.c tests/hle/test_hle.c -o /tmp/ppcx-hle-test
+          /tmp/ppcx-hle-test
+
   c-syntax:
     name: Runtime C syntax
     runs-on: ubuntu-latest
@@ -54,6 +65,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: Compile original runtime source without any game binaries
         run: |
-          cc -std=c11 -Wall -Wextra -Werror -I src/runtime/include -fsyntax-only src/runtime/src/main.c src/runtime/src/ppcx_runtime.c src/runtime/src/ppcx_image.c
+          cc -std=c11 -Wall -Wextra -Werror -I src/runtime/include -fsyntax-only src/runtime/src/main.c src/runtime/src/ppcx_runtime.c src/runtime/src/ppcx_image.c src/runtime/src/ppcx_hle.c
 
 # No Nintendo files, game dumps, generated derived code, assets or keys are used or uploaded.
