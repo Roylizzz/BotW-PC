@@ -80,6 +80,56 @@ function readTextPointers(buf, parsed, base, textEnd) {
 }
 
 /**
+ * Cross-range direct-branch targets. When `translate` sees a `b`/`bc` whose
+ * target lies outside the site's own range it emits a runtime dispatch, so
+ * the target must be a registered start; otherwise the dispatch fails at
+ * run time. Every in-text direct branch therefore needs its target either
+ * inside [start(site), end(site)) or in the start set. Adding a target
+ * splits a range, which can expose new cross-range pairs, so this iterates
+ * to a fixpoint. Returns the sorted addresses to add (never in `union`).
+ */
+function findCrossRangeTailTargets(branchStarts, pointerSet, directPairs, textEnd) {
+    let union = [...branchStarts, ...pointerSet].sort((a, b) => a - b);
+    const added = new Set();
+    for (;;) {
+        const candidates = new Set();
+        for (let i = 0; i < directPairs.length; i += 2) {
+            const site = directPairs[i];
+            const target = directPairs[i + 1];
+            const ti = upperBound(union, target) - 1;
+            if (union[ti] === target) continue; // target is already a start
+            const si = upperBound(union, site) - 1;
+            const start = union[si];
+            const end = si + 1 < union.length ? union[si + 1] : textEnd;
+            if (target >= start && target < end) continue; // intra-range goto
+            candidates.add(target);
+        }
+        let grew = false;
+        for (const c of candidates) {
+            if (!added.has(c)) {
+                added.add(c);
+                grew = true;
+            }
+        }
+        if (!grew) break;
+        union = [...union, ...candidates].sort((a, b) => a - b);
+    }
+    return [...added].sort((a, b) => a - b);
+}
+
+/** Index of the first element > value (all values unique and sorted). */
+function upperBound(arr, value) {
+    let lo = 0;
+    let hi = arr.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (arr[mid] <= value) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
+/**
  * @param {Buffer} buf   raw RPX file contents
  * @param {object} parsed result of rpxinfo's parseRpx()
  * @param {object} [opts] { textSection: ".text" }
@@ -99,7 +149,8 @@ function analyzeRpx(buf, parsed, opts = {}) {
     const unknownOpcodeCount = new Map();
     const starts = new Set([base]);
     const blTargets = [];
-    const tailTargets = [];
+    let tailBranchesInText = 0;
+    const directPairs = []; // flat [site, target, ...] for in-text `b`/`bc` targets
     const importLikeTargets = []; // bl targets outside .text (import stubs)
 
     let supportedWords = 0;
@@ -130,7 +181,13 @@ function analyzeRpx(buf, parsed, opts = {}) {
             else importLikeTargets.push({ site: addr, target });
         } else if (instr.branch === "b") {
             const target = instr.aa ? instr.li >>> 0 : (addr + instr.li) >>> 0;
-            if (target >= base && target < textEnd) tailTargets.push({ site: addr, target });
+            if (target >= base && target < textEnd) {
+                tailBranchesInText++;
+                directPairs.push(addr, target);
+            }
+        } else if (instr.branch === "bc") {
+            const target = instr.aa ? instr.bd >>> 0 : (addr + instr.bd) >>> 0;
+            if (target >= base && target < textEnd) directPairs.push(addr, target);
         }
 
         if (previousWasBoundary && looksLikePrologue(word)) starts.add(addr);
@@ -148,6 +205,12 @@ function analyzeRpx(buf, parsed, opts = {}) {
     const extraPointerStarts = [...pointerSet].filter((p) => !starts.has(p)).sort((a, b) => a - b);
 
     const sortedStarts = [...starts].sort((a, b) => a - b);
+
+    // Cross-range direct-branch targets: a `b` to an address outside the
+    // site's own range becomes a runtime dispatch, so the target must be a
+    // registered start. Computed over the final partition (branch starts
+    // plus pointer starts) and iterated to a fixpoint.
+    const tailStarts = findCrossRangeTailTargets(sortedStarts, pointerSet, directPairs, textEnd);
     const ranges = [];
     let fullySupported = 0;
     let withCalls = 0;
@@ -197,6 +260,7 @@ function analyzeRpx(buf, parsed, opts = {}) {
         functionCount: sortedStarts.length,
         functionStarts: sortedStarts,
         pointerStarts: extraPointerStarts,
+        tailStarts,
         ranges,
         coverage: {
             supported: supportedWords,
@@ -207,11 +271,12 @@ function analyzeRpx(buf, parsed, opts = {}) {
         stats: {
             blTargetsInText: blTargets.length,
             blTargetsOutsideText: importLikeTargets.length,
-            tailBranchesInText: tailTargets.length,
+            tailBranchesInText,
             fullySupportedFunctions: fullySupported,
             functionsWithInboundCall: withCalls,
             pointerStartsTotal: pointerSet.size,
             pointerStartsExtra: extraPointerStarts.length,
+            tailStartsAdded: tailStarts.length,
         },
     };
 }

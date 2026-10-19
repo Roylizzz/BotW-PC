@@ -52,7 +52,7 @@ byte-identical output on the v208 demo).
 
 The pipeline runs against the real module (9,248,515 words of `.text`):
 
-* `analyze` finishes in ~2.3 s: 99.9994% of words decode to supported
+* `analyze` finishes in ~3 s: 99.9994% of words decode to supported
   instructions (9,248,462 of 9,248,515), none are known-but-unsupported and
   53 words are unknown/data — re-measured on 2026-10-19 after implementing
   `psq_l`/`psq_st`, the indexed forms and the external decode cross-check
@@ -61,7 +61,10 @@ The pipeline runs against the real module (9,248,515 words of `.text`):
   census of the same module has 97,363) plus 104,499 pointer-only starts
   taken from `.rodata`/`.data` code pointers (vtable/callback/constant-getter
   and static-init table entries that no branch scan can reach; the `.data`
-  half landed 2026-10-19, +473 starts). Cross-checked against the census
+  half landed 2026-10-19, +473 starts). A cross-range fixpoint then adds 518
+  tail starts so every in-text `b`/`bc` target is either a start or inside
+  its site's range (union: **201,891 translation ranges**). Cross-checked
+  against the census
   on 2026-10-19: 96,052 branch starts agree, both difference classes are
   classified and sampled, and the census turns out to be a lower bound
   (Ghidra has multi-kilobyte gaps that the linear scan covers; see item 11

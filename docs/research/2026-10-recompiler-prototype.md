@@ -22,7 +22,7 @@ first GX2 frame?
    `ppcx imports` (REL24/ADDR16 map) → `ppcx translate` (BFS over callees,
    emits one C function per guest function) → TCC → `src/runtime`
    (region-checked arena, dispatcher, HLE entry points). Analysis of the whole
-   module takes **~2.3 s**; nothing derived from the game is committed
+   module takes **~3 s**; nothing derived from the game is committed
    (generated C goes to the git-ignored `build/`).
 
 2. **Boundary census.**
@@ -44,7 +44,19 @@ first GX2 frame?
      `Cpu`. The Ghidra census contains only 115 of these targets (it does
      not model relocation-derived entries); the 473 starts added by the
      `.data` scan (2026-10-19) are absent from it entirely.
-   - Translation ranges use the union of both sets: **201,373 starts**.
+   - Cross-range tail targets: a `b`/`bc` whose target lies outside the
+     site's own translation range becomes a runtime dispatch, so the target
+     must be a start. Iterating that requirement over the full partition
+     (branch + pointer starts) to a fixpoint adds **518 starts** on v208 —
+     360 of them are the census tail-`b` entries, the rest are entries the
+     census misses. Re-checked after the fact: of all 828,267 in-text
+     `b`/`bc` pairs with the final union, 20,476 target a start and 807,791
+     are intra-range, with **zero remaining dispatch gaps**. The naive
+     “tail target after a terminal instruction” rule matches 17,414
+     candidates, 34x the exact set. Sampled targets follow a terminal
+     transfer (505 of 518, 399 right after a `blr`) and disassemble as real
+     entries (`lwz`, `addis`, `or`-style prologues, `addi`, `lbz`, …).
+   - Translation ranges use the union of all three sets: **201,891 starts**.
 
 3. **Instruction coverage** (9,248,515 words): **99.9994% supported**
    (9,248,462), no known-unsupported instructions, 0.0006% unknown/data
@@ -214,15 +226,17 @@ first GX2 frame?
 
 11. **Function-start cross-check against the local Ghidra census
     (2026-10-19).** The branch-derived starts (96,874) and the pointer
-    starts (104,499 extra; 201,373 translation ranges) were compared with
-    the Ghidra 12.1 headless census of the same module
+    starts (104,499 extra; 201,891 translation ranges with the tail starts)
+    were compared with the Ghidra 12.1 headless census of the same module
     (97,363 functions: 96,946 in `.text` plus 417 named import stubs at
     `0xC000xxxx`). **96,052 branch starts agree (99.15%)**, and the
     pointer class is almost entirely absent from the census (115 of
     104,499). The 779 Ghidra-only in-`.text` entries split into 362
-    targets of tail `b` branches (473 sites, no `bl` site — our discovery
-    deliberately skips tail targets unless they look like a prologue after
-    a boundary) and 417 others: tiny leaves after boundaries that no
+    targets of tail `b` branches (473 sites, no `bl` site — our
+    branch-derived discovery deliberately skips tail targets unless they
+    look like a prologue after a boundary; the cross-range tail-start
+    class below covers the ones a `b` from another range needs) and 417
+    others: tiny leaves after boundaries that no
     prologue shape matches (`addi r3,r3,8; blr`, `li r3,1; blr`),
     large-frame prologues that begin `mr r11,r1; stwu …` before the
     `mflr`, and a dense cluster of 8-byte non-prologue entries around
@@ -236,15 +250,19 @@ first GX2 frame?
     bound, not a completeness reference. The pointer-only targets are
     tiny constant getters (`li r3,N; blr`), no-op stubs and trampolines
     (`addi r3,r3,-N; b`): 91,976 of 104,499 follow a `blr` and all but 2
-    follow a terminal transfer. Follow-ups: the 362 tail-only entries are
-    control-flow targets our start set lacks (a `b` to them becomes a
-    dispatch to an unregistered address at run time; the naive “tail
-    target after a terminal instruction” rule matches 17,414 candidates,
-    ~48x the needed set, so the fix needs a better criterion or
-    interior-entry support). The `.rela.data` gap was closed on
+    follow a terminal transfer. The tail-target gap was closed on
+    2026-10-19 with the cross-range fixpoint (item 2): **518 starts added,
+    360 of the 362 census tail-`b` entries covered**, and an
+    after-the-fact re-check of all 828,267 in-text `b`/`bc` pairs against
+    the final union leaves **zero dispatch gaps** (20,476 pairs target a
+    start, 807,791 are intra-range). The 2 uncovered census entries
+    (`0x0400547C`, `0x0420D92C`) are intra-range `goto`s in our partition,
+    so no entry is needed. The naive “tail target after a terminal
+    instruction” rule would have added 17,414 starts (34x the exact set).
+    The `.rela.data` gap was closed on
     2026-10-19: the pointer scan now reads `.rela.data` as well (+473
-    extra starts, +742 total targets, union 200,900 → 201,373; none of
-    the 473 is a census entry). The comparison used the
+    extra starts, +742 total targets; union 200,900 → 201,373 before the
+    tail fixpoint above). The comparison used the
     local census CSV under `Tools/analysis/` and the analysis JSON; both
     are game-derived and stay ignored.
 
@@ -259,8 +277,9 @@ first GX2 frame?
 - **Derived:** the interpretation of `.rodata` ADDR32 entries as code
   pointers (validated by sampling), and the tail-call reading of
   `b`-to-import sites (decided by the relocation, not by the stored field).
-- **Unknown:** whether every pointer-derived start is a true entry (the
-  model tolerates false positives by design); loader/MMU details of the
+- **Unknown:** whether every pointer-derived or cross-range tail start is a
+  true entry (the model tolerates false positives by design); loader/MMU
+  details of the
   console; the exact set of addresses the game touches at runtime.
 
 ## Open questions / next steps towards a first GX2 frame

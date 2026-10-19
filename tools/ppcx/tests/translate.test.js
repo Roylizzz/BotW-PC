@@ -83,6 +83,29 @@ test("displacements beyond 16 MB reach the right target", () => {
     assert.match(r.code, /PPCX_DISPATCH\(c, 0x0314fe24u\);/);
 });
 
+test("a cross-range `b` to an emitted start becomes a tail call", () => {
+    // b 0x1100 out of [0x1000, 0x1008): the target must have its own body.
+    const r = translate([0x48000100, 0x4e800020], {
+        textEnd: 0x2000,
+        startSet: [0x1000, 0x1100],
+        emitSet: [0x1000, 0x1100],
+    });
+    assert.match(r.code, /PPCX_TAILCALL\(c, f_00001100\);/);
+    assert.deepEqual(r.warnings, []);
+    assert.deepEqual([...r.externalTargets], []);
+});
+
+test("a cross-range `b` to a start outside the unit dispatches at run time", () => {
+    const r = translate([0x48000100, 0x4e800020], {
+        textEnd: 0x2000,
+        startSet: [0x1000, 0x1100],
+        emitSet: [0x1000],
+    });
+    assert.match(r.code, /PPCX_DISPATCH\(c, 0x00001100u\);/);
+    assert.deepEqual(r.warnings, []);
+    assert.deepEqual([...r.externalTargets], [0x1100]);
+});
+
 test("substitutes address-taken imports (HA/LO pair)", () => {
     const dataSite = new Map([
         [0x2002, { index: 3, type: 6 }],

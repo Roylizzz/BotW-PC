@@ -173,3 +173,26 @@ test("collects code pointers from .rela.rodata and .rela.data only when ADDR32",
     // unchanged by the pointer scan.
     assert.deepEqual(a.functionStarts, [0x1000, 0x100c, 0x2000]);
 });
+
+function buildTailFixture() {
+    const { buf, parsed } = buildFixture();
+    const put = (addr, word) => buf.writeUInt32BE(word >>> 0, addr - BASE + TEXT_OFFSET);
+    put(0x1004, 0x48000100); // b 0x1104: crosses the range, adds 0x1104
+    put(0x1100, 0x48000100); // b 0x1200: intra-range until 0x1104 splits it
+    put(0x1400, 0x48000100); // b 0x1500: intra-range, must stay out
+    return { buf, parsed };
+}
+
+test("adds cross-range tail targets to the start set to a fixpoint", () => {
+    const { buf, parsed } = buildTailFixture();
+    const a = analyzeRpx(buf, parsed);
+    // 0x1104 is a direct cross-range target; adding it splits the range and
+    // exposes 0x1200 as the second-order cross-range target. 0x1500 stays a
+    // plain intra-range goto.
+    assert.deepEqual(a.tailStarts, [0x1104, 0x1200]);
+    assert.equal(a.stats.tailStartsAdded, 2);
+    assert.ok(!a.tailStarts.includes(0x1500));
+    // Tail targets never re-classify branch starts or pointer starts.
+    assert.deepEqual(a.functionStarts, [0x1000, 0x100c, 0x2000]);
+    assert.deepEqual(a.pointerStarts, []);
+});
