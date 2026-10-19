@@ -77,9 +77,11 @@ function u32hex(n) {
     return `0x${(n >>> 0).toString(16)}u`;
 }
 
-function loadRpx(file) {
-    if (!file) fail("--rpx <file> is required");
-    const buf = fs.readFileSync(file);
+/**
+ * Loads and parses one RPX into the shape the pipeline works with. `file` is
+ * a label (a path for real dumps, a synthetic name for in-memory fixtures).
+ */
+function loadRpxFrom(buf, file) {
     const parsed = rpxlib.parseRpx(buf);
     const text = rpxlib.findSection(parsed, ".text");
     if (!text) fail(".text section not found");
@@ -105,6 +107,11 @@ function loadRpx(file) {
         importNotes: collected.notes,
         maps,
     };
+}
+
+function loadRpx(file) {
+    if (!file) fail("--rpx <file> is required");
+    return loadRpxFrom(fs.readFileSync(file), file);
 }
 
 const ANALYSIS_VERSION = 6; // bump when decode/analysis semantics change
@@ -250,30 +257,36 @@ function scanCallees(rpx, start, end, startSet) {
     return [...found];
 }
 
-function cmdTranslate(args) {
-    const rpx = loadRpx(args.rpx);
-    const outDir = args.out || "build/ppcx";
-    fs.mkdirSync(outDir, { recursive: true });
-    const cacheFile = args.cache || path.join(outDir, "analysis.json");
-    const { analysis, cached } = loadOrComputeAnalysis(rpx, cacheFile);
-    if (!cached) console.log(`analysis: computed and cached to ${cacheFile}`);
-
+/**
+ * Translates a module (a real RPX dump or a synthetic fixture) into one C
+ * translation unit. `roots` is the set of entry functions to translate; each
+ * root grows its callees up to `follow` levels. `entry` (defaults to
+ * roots[0]) is the address published as ppcx_entry.
+ *
+ * Returns `{ gen, report, ordered, truncated }`: the text of gen.c, the same
+ * report the CLI writes as translate-report.json, the ordered translated
+ * starts and whether the `max` function cap was hit.
+ */
+function translateModule({ rpx, analysis, roots, entry, follow = 0, max = 256 }) {
     const startSet = new Set([...analysis.functionStarts, ...(analysis.pointerStarts || [])]);
     const ranges = buildRangeMap([...startSet].sort((a, b) => a - b), rpx.base + rpx.size);
 
-    const root = numArg(args.fn, undefined, "--fn address");
-    if (root === undefined) fail("--fn <addr> is required");
-    if (!startSet.has(root)) {
-        const near = analysis.functionStarts.filter((a) => a <= root).pop();
-        fail(`0x${hex8(root)} is not a known function start` + (near ? ` (closest start at or below: 0x${hex8(near)})` : ""));
+    if (!Array.isArray(roots) || roots.length === 0) throw new Error("translateModule needs at least one root");
+    for (const candidate of roots) {
+        if (!startSet.has(candidate)) {
+            const near = analysis.functionStarts.filter((a) => a <= candidate).pop();
+            throw new Error(
+                `0x${hex8(candidate)} is not a known function start` +
+                    (near ? ` (closest start at or below: 0x${hex8(near)})` : "")
+            );
+        }
     }
+    const root = entry !== undefined ? entry : roots[0];
+    if (!startSet.has(root)) throw new Error(`entry 0x${hex8(root)} is not a known function start`);
 
-    const follow = numArg(args.follow, 0, "--follow");
-    const max = Math.max(1, numArg(args.max, 256, "--max"));
-
-    // Grow the translation set (BFS over callees).
-    const discovered = new Map([[root, 0]]);
-    const queue = [root];
+    // Grow the translation set (BFS over callees from every root).
+    const discovered = new Map(roots.map((r) => [r, 0]));
+    const queue = [...roots];
     let truncated = false;
     while (queue.length > 0) {
         const addr = queue.shift();
@@ -314,6 +327,7 @@ function cmdTranslate(args) {
 
     // Tally what the translation unit needs from the runtime.
     const hleCounts = new Map();
+    const addrTakenCounts = new Map();
     const externalTargets = new Set();
     let instructionCount = 0;
     let unsupportedCount = 0;
@@ -323,8 +337,16 @@ function cmdTranslate(args) {
         unsupportedCount += r.unsupported.reduce((n, u) => n + u.count, 0);
         warningCount += r.warnings.length;
         for (const idx of r.hleCalls) hleCounts.set(idx, (hleCounts.get(idx) || 0) + 1);
+        for (const idx of r.importAddrs) addrTakenCounts.set(idx, (addrTakenCounts.get(idx) || 0) + 1);
         for (const t of r.externalTargets) externalTargets.add(t);
     }
+
+    /* Every import the unit mentions — called through a REL24 site or only
+     * address-taken through an ADDR16 site — must resolve through
+     * ppcx_import_name: a dispatcher trampoline for an address-taken import
+     * whose name is missing would report "unknown-import" and silently
+     * no-op (found by the tests/boot fixture). */
+    const usedImports = new Set([...hleCounts.keys(), ...addrTakenCounts.keys()]);
 
     // Emit the generated translation unit.
     const gen = [];
@@ -348,10 +370,10 @@ function cmdTranslate(args) {
     gen.push("const unsigned ppcx_function_count = sizeof(ppcx_functions) / sizeof(ppcx_functions[0]);");
     gen.push(`const u32 ppcx_entry = ${addrHex(root)};`);
     gen.push("");
-    gen.push("/* Names of the imports this unit calls, for the HLE layer. */");
+    gen.push("/* Names of the imports this unit mentions (called or address-taken), for the HLE layer. */");
     gen.push("const char *ppcx_import_name(u32 import_index) {");
     gen.push("    switch (import_index) {");
-    for (const idx of [...hleCounts.keys()].sort((a, b) => a - b)) {
+    for (const idx of [...usedImports].sort((a, b) => a - b)) {
         const im = rpx.imports[idx];
         const label = `${im.module}.${im.name}`;
         gen.push(`    case ${idx}u: return ${JSON.stringify(label)};`);
@@ -360,10 +382,6 @@ function cmdTranslate(args) {
     gen.push("    }");
     gen.push("}");
     gen.push("");
-    const genPath = path.join(outDir, "gen.c");
-    fs.writeFileSync(genPath, gen.join("\n"));
-
-    // Report.
     const report = {
         rpx: rpx.file,
         root,
@@ -380,11 +398,19 @@ function cmdTranslate(args) {
             unsupported: r.unsupported,
             warnings: r.warnings,
             hle: r.hleCalls,
+            importAddrs: r.importAddrs,
             externalTargets: r.externalTargets,
         })),
-        hleImportsUsed: [...hleCounts.keys()].sort((a, b) => a - b).map((idx) => {
+        hleImportsUsed: [...usedImports].sort((a, b) => a - b).map((idx) => {
             const im = rpx.imports[idx];
-            return { index: idx, module: im.module, name: im.name, kind: im.kind, calls: hleCounts.get(idx) };
+            return {
+                index: idx,
+                module: im.module,
+                name: im.name,
+                kind: im.kind,
+                calls: hleCounts.get(idx) || 0,
+                addressTaken: addrTakenCounts.get(idx) || 0,
+            };
         }),
         externalTargets: [...externalTargets].sort((a, b) => a - b),
         totals: {
@@ -394,17 +420,42 @@ function cmdTranslate(args) {
             warnings: warningCount,
         },
     };
+    return { gen: gen.join("\n"), report, ordered, truncated };
+}
+
+function cmdTranslate(args) {
+    const rpx = loadRpx(args.rpx);
+    const outDir = args.out || "build/ppcx";
+    fs.mkdirSync(outDir, { recursive: true });
+    const cacheFile = args.cache || path.join(outDir, "analysis.json");
+    const { analysis, cached } = loadOrComputeAnalysis(rpx, cacheFile);
+    if (!cached) console.log(`analysis: computed and cached to ${cacheFile}`);
+
+    const startSet = new Set([...analysis.functionStarts, ...(analysis.pointerStarts || [])]);
+    const root = numArg(args.fn, undefined, "--fn address");
+    if (root === undefined) fail("--fn <addr> is required");
+    if (!startSet.has(root)) {
+        const near = analysis.functionStarts.filter((a) => a <= root).pop();
+        fail(`0x${hex8(root)} is not a known function start` + (near ? ` (closest start at or below: 0x${hex8(near)})` : ""));
+    }
+
+    const follow = numArg(args.follow, 0, "--follow");
+    const max = Math.max(1, numArg(args.max, 256, "--max"));
+
+    const { gen, report } = translateModule({ rpx, analysis, roots: [root], entry: root, follow, max });
+    const genPath = path.join(outDir, "gen.c");
+    fs.writeFileSync(genPath, gen);
     const reportPath = args.report || path.join(outDir, "translate-report.json");
     fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
 
-    console.log(`translated ${results.length} function(s), ${instructionCount} instructions` +
-        (truncated ? ` (capped at --max ${max})` : ""));
+    console.log(`translated ${report.totals.functions} function(s), ${report.totals.instructions} instructions` +
+        (report.truncated ? ` (capped at --max ${max})` : ""));
     console.log(`HLE imports used: ${report.hleImportsUsed.length}` +
         (report.hleImportsUsed.length > 0
             ? ` (${report.hleImportsUsed.map((h) => `${h.module}.${h.name}`).slice(0, 8).join(", ")}${report.hleImportsUsed.length > 8 ? ", ..." : ""})`
             : ""));
     console.log(`external targets left to the runtime dispatcher: ${report.externalTargets.length}`);
-    console.log(`unsupported instructions: ${unsupportedCount}, warnings: ${warningCount}`);
+    console.log(`unsupported instructions: ${report.totals.unsupportedInstructions}, warnings: ${report.totals.warnings}`);
     console.log(`wrote ${genPath}`);
     console.log(`wrote ${reportPath}`);
 }
@@ -558,4 +609,14 @@ function main() {
     }
 }
 
-main();
+if (require.main === module) main();
+
+module.exports = {
+    loadRpx,
+    loadRpxFrom,
+    computeAnalysis,
+    loadOrComputeAnalysis,
+    buildRangeMap,
+    scanCallees,
+    translateModule,
+};

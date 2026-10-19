@@ -37,7 +37,16 @@ node tools/ppcx/ppcx.js image     --rpx /path/to/U-King-v208.rpx --out build/ppc
 `translate` caches the whole-function census next to its output
 (`build/ppcx/analysis.json`) so repeated translations are fast, and writes a
 report with every warning, unsupported instruction and dispatch target it
-left behind (`build/ppcx/translate-report.json`).
+left behind (`build/ppcx/translate-report.json`). The report lists every
+import the unit depends on, split into `calls` (REL24 sites) and
+`addressTaken` (ADDR16 sites); both kinds are resolved through the generated
+`ppcx_import_name`, because an address-taken import is called at run time
+through the dispatcher trampoline. The same pipeline is available as a small
+Node API (`loadRpx`/`loadRpxFrom`, `computeAnalysis`, `buildRangeMap`,
+`scanCallees`, `translateModule`), which `tests/boot` uses to emit one unit
+per boot scenario; `translateModule` accepts several roots plus an explicit
+`ppcx_entry` and otherwise behaves exactly like the CLI (verified
+byte-identical output on the v208 demo).
 
 ## Prototype status (October 2026)
 
@@ -159,7 +168,7 @@ deferred (see *Load image*).
 ```sh
 cd tools/ppcx && npm test                                       # 97 decoder/translator/image cases
 # from the repository root: compiled harnesses (need a C compiler)
-node --test "tests/isa/*.test.js" "tests/loader/*.test.js" "tests/mem/*.test.js" "tools/ppcx/tests/*.test.js"
+node --test "tests/isa/*.test.js" "tests/loader/*.test.js" "tests/mem/*.test.js" "tests/boot/*.test.js" "tools/ppcx/tests/*.test.js"
 ```
 
 The harness (`tests/isa`) translates 221 synthetic guest programs, compiles
@@ -192,6 +201,24 @@ overlapping, `OSBlockSet`, `memcpy`, `memset`, block-granular
 processes (read-only destination, unmapped destination, unmapped source,
 read-only `DCZeroRange` block) (`node tests/mem/run.js` → `mem: OK`; the
 job runs in CI).
+
+The synthetic boot harness (`tests/boot`) authors a game-free RPX (five
+functions, three imports, relocated `.rodata` pointers, two deferred TLS
+sites, `.data`/`.bss`), runs it through the real `analyze` →
+`translateModule` → `buildImage`/`serializeImage` path, compiles the
+generated unit with the real runtime, checked-memory model, image loader and
+HLE layer, and boots it headless in six scenarios: modeled calls through a
+direct `bl` and through an address-taken import's dispatcher trampoline
+(`PPCX_HLE_TRACE`/`PPCX_DISPATCH_TRACE` transcripts), an unmodeled import
+tolerated as a counted no-op, `PPCX_HLE_STRICT=1` (exit 5 + register dump), a
+pointer-only getter reached from `.rodata`, an unmapped read (exit 9) and the
+same boot without `PPCX_IMAGE` (exit 9 at the first data read). Every
+stderr/stdout line and every guest-memory probe is compared with
+fixture-authored expectations, and the boot run must repeat byte-identically
+(`node tests/boot/run.js` → `boot: 6 scenarios … boot: OK`). The fixture
+found two defects now gated there: address-taken imports missing from
+`ppcx_import_name` and an initial SP that left the loader's ABI frame outside
+the stack region.
 
 The native HLE contract test (`tests/hle/test_hle.c`, compiled with
 `cc -Wall -Wextra -Werror` in CI) covers the 13 modeled coreinit identity

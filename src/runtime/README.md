@@ -58,15 +58,22 @@ prototype.
   blob is invalid),
 * `PPCX_HLE_TRACE=1` – log every emulated system call,
 * `PPCX_HLE_STRICT=1` – abort on the first **unimplemented** system call; implemented models remain available.
+* `PPCX_DISPATCH_TRACE=1` – log every control transfer that goes through the
+  dispatcher (the entry point, indirect calls and import trampolines).
 
 ## Checked guest memory (exit code 9)
 
 `ppcx_run` installs the checked memory model before the entry point:
 `ppcx_mem_reset` activates it with the stack mapped (`PPCX_INITIAL_STACK`
 down 1 MiB), and the image loader registers every segment of a
-`PPCX_IMAGE` blob as a region. From then on every guest access made by
-translated code (plain, byte-reversed, string/multiple-register helpers and
-`dcbz`) must fall **entirely inside one region**; anything else prints
+`PPCX_IMAGE` blob as a region. The loader calls the entry point with a valid
+ABI frame, so the initial SP is `PPCX_INITIAL_STACK - 16` (inside the mapped
+stack, 16-byte aligned): a standard prologue can save LR at `SP+4` of that
+frame. With SP exactly at the top, the save lies outside the region and the
+first real prologue faults — the `tests/boot` fixture gates that behavior.
+From then on every guest access made by translated code (plain,
+byte-reversed, string/multiple-register helpers and `dcbz`) must fall
+**entirely inside one region**; anything else prints
 
 ```
 ppcx: guest memory fault: read of 4 byte(s) at 0x00020000 is not inside any mapped region
@@ -178,3 +185,18 @@ read-only `DCZeroRange` block must each exit with code 9 and the exact
 diagnostic. The workflow runs both the contract test and `tests/mem` on every
 pull request. Do not count modeled identity or memory/cache calls as evidence
 of full Cafe OS compatibility.
+
+## Synthetic boot fixture
+
+`node tests/boot/run.js` compiles this runtime (together with `ppcx_mem.c`,
+`ppcx_hle.c` and `ppcx_image.c`), a generated translation unit and a small
+driver, then boots a game-free RPX from `tests/boot/fixture.js` headless. The
+fixture exercises the real pipeline end to end — analysis, translation, load
+image, checked memory and HLE — in six scenarios: modeled calls through a
+direct `bl` and through an address-taken import's dispatcher trampoline (with
+`PPCX_HLE_TRACE`/`PPCX_DISPATCH_TRACE` checkpoints), an unmodeled import in
+diagnostic mode, `PPCX_HLE_STRICT=1` (exit 5 with the register dump), a
+pointer-only getter, an unmapped read (exit 9) and the same boot without
+`PPCX_IMAGE` (exit 9 at the first data read). Every stderr/stdout line and
+every guest-memory probe is compared with the authored expectations, and the
+boot run must repeat byte-identically.

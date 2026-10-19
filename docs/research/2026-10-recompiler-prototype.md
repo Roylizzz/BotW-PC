@@ -138,6 +138,43 @@ first GX2 frame?
    and Fletcher-32 boundary probes; `node tests/loader/run.js` →
    `loader: 62 state lines, 10 negative blobs, read-only write fault … loader: OK`.
 
+   The synthetic boot fixture (`tests/boot`) closes the loop from authored
+   RPX bytes to a booted guest. It builds a game-free RPX (five functions,
+   three imports — one called directly through a REL24 site, one reached
+   through an ADDR16 trampoline, one unmodeled — three relocated `.rodata`
+   pointers with one addend, two deferred TLS sites, `.data`/`.bss` and the
+   allocated metadata trio), runs the real `analyze` → `translateModule` →
+   `buildImage` pipeline and compiles the result with the real runtime,
+   checked-memory model and HLE layer. Six scenarios compare every
+   stderr/stdout line: a boot with `PPCX_HLE_TRACE`/`PPCX_DISPATCH_TRACE`
+   checkpoints, an unmodeled import tolerated as a counted no-op, strict mode
+   (exit 5 + register dump), a pointer-only getter, a read outside every
+   region (exit 9) and the same boot without `PPCX_IMAGE` (fault at the first
+   data read instead of zeroes); guest probes assert the applied relocations,
+   the untouched TLS bytes and the two copied words in `.data`/`.bss`, and the
+   boot run must repeat byte-identically. `node tests/boot/run.js` → `boot: 6
+   scenarios (4 entries compiled), 28 transcript lines, 36 memory probe lines
+   … boot: OK, the synthetic RPX boots headless with stable checkpoints`
+   (TCC 0.9.27, 2026-10-19).
+
+   The fixture paid for itself immediately by finding two real defects. (1)
+   Address-taken imports were absent from the generated `ppcx_import_name`
+   table — the translator only recorded REL24 call sites — so the dispatcher
+   reported `unknown-import` and the HLE layer silently no-opped a call made
+   through the trampoline; `translateFunction` now reports `importAddrs` (one
+   entry per import, not per HA/LO site), `translateModule` unions those with
+   the REL24 imports for the name table, and the report gains
+   `importAddrs`/`addressTaken`. (2) The initial guest SP sat exactly at the
+   top of the mapped stack, leaving the loader's ABI frame outside the
+   region, so any translated function with the standard prologue
+   (`stwu r1,-N(r1)` + LR save at `SP+4` of the caller frame) faulted at its
+   LR store; `ppcx_run` now starts at `PPCX_INITIAL_STACK - 16`, inside the
+   mapped stack and 16-byte aligned. Both were observed as failing
+   transcripts before the fixes (10 and 4 reported failures in the two
+   mutation runs — reverting the frame and changing one authored data word);
+   the v208 demo afterwards is unchanged (`r3 = 0x031FA4C8`,
+   `proc_ui.ProcUIInit` still reported, strict exit 5).
+
 ## Evidence quality
 
 - **Observed:** all metrics above, produced by our tools on our own copy

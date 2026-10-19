@@ -57,9 +57,14 @@
 #define PPCX_HLE_TRAMPOLINE_RANGE (0x10000u * PPCX_HLE_TRAMPOLINE_STRIDE)
 
 /* Initial guest stack pointer for ad-hoc entry points, and the size of the
- * checked stack region mapped below it. */
+ * checked stack region mapped below it. The loader calls the entry point
+ * with a valid ABI frame, so the initial SP sits PPCX_INITIAL_FRAME bytes
+ * below the mapped top and the entry's own prologue can save LR at SP+4 of
+ * that frame (with SP exactly at the top, the first real prologue faults;
+ * found by the tests/boot fixture). */
 #define PPCX_INITIAL_STACK 0x10000000u
 #define PPCX_STACK_BYTES 0x00100000u
+#define PPCX_INITIAL_FRAME 16u
 
 u8 *ppcx_memory = NULL;
 
@@ -315,7 +320,7 @@ int ppcx_run(void) {
      * load/store unit enabled (the shipped game code never writes HID2 and
      * still executes psq_* instructions, so LSQE must already be set). */
     cpu.hid2 = PPCX_HID2_LSQE;
-    cpu.gpr[1] = PPCX_INITIAL_STACK;
+    cpu.gpr[1] = PPCX_INITIAL_STACK - PPCX_INITIAL_FRAME;
     fprintf(stderr, "ppcx: entry 0x%08X, %u translated function(s)\n",
             (unsigned)ppcx_entry, ppcx_function_count);
     ppcx_dispatch(&cpu, ppcx_entry);
