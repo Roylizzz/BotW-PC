@@ -39,12 +39,15 @@ first GX2 frame?
      this execution model because every register lives in one shared `Cpu`.
    - Translation ranges use the union of both sets: **200,900 starts**.
 
-3. **Instruction coverage** (9,248,515 words): **99.9993% supported**
-   (9,248,451), no known-unsupported instructions, 0.0007% unknown/data
-   (64: `invalid-0` 47, `op31-xo375` 11, `op0` 6). Re-measured on
-   2026-10-19 after implementing the quantized paired-single loads/stores,
-   the last known-unsupported block (`psq_l` 118,005 + `psq_st` 93,411 =
-   211,416 words in this module). Earlier snapshots: 97.71% / 2.29% / 0.00%
+3. **Instruction coverage** (9,248,515 words): **99.9994% supported**
+   (9,248,462), no known-unsupported instructions, 0.0006% unknown/data
+   (53: `invalid-0` 47, `op0` 6). Re-measured on 2026-10-19 after
+   implementing the quantized paired-single loads/stores, the last
+   known-unsupported block (`psq_l` 118,005 + `psq_st` 93,411 = 211,416
+   words in this module), and again after the independent decode
+   cross-check fixed the `lhzux`/`lhaux` encodings (the 11 former
+   `op31-xo375` words are decoded now and 8 more functions became fully
+   supported, 96,865 total). Earlier snapshots: 97.71% / 2.29% / 0.00%
    (post-audit) and 97.00% / 2.96% / 0.04% (pre-fix).
 
 4. **Import model validated on the real module.** 445 slots (437 functions,
@@ -65,6 +68,13 @@ first GX2 frame?
    - `blr`, unconditional `bclr` and `bctr` were not wired to
      return/indirect-tail emission.
    - `b`-to-import sites (tail calls) were not substituted.
+   - `lhzux` (XO 311) was named `lhaux` with sign extension, so every
+     `lhzux` in the module (37 words) was translated as a sign-extending
+     load, while `lhaux` (XO 375, 11 words) was not decoded at all. The
+     independent oracle in `tests/isa` carried the same mistake, so the
+     differential harness could not see it; the external rizin cross-check
+     exposed it (2026-10-19). Both encodings are fixed and gated by
+     differential cases, including the update order when rT = rA.
 
 6. **End-to-end demo on real code.** `FUN_031FA4CC` — the GraphicsSystem
    method at vtable `+0x5C` per the boot-path note, found here through the
@@ -124,11 +134,13 @@ first GX2 frame?
    results. Since v208 never writes HID2 or the GQRs but executes 211,416
    `psq_*` instructions, the model boots with `LSQE=1` and all-zero GQRs
    (float quantization) — a documented assumption, not an observation.
-   The differential harness grew to 221 compiled programs / 907 state
-   lines: it now compares raw-bit FPR lanes plus the GQR/HID2 state on every
-   case and includes 36 new paired-single cases (all quantize types, both
-   scale signs, paired and unpaired `W` forms, indexed addressing, update
-   forms, clamping, truncation and FTZ corners). See
+   The differential harness grew to 226 compiled programs / 927 state
+   lines (the 2026-10-19 cross-check added `lhzx`/`lhzux`/`lhax`/`lhaux`
+   cases, including the rT = rA update order): it now compares raw-bit FPR
+   lanes plus the GQR/HID2 state on every case and includes 36 new
+   paired-single cases (all quantize types, both scale signs, paired and
+   unpaired `W` forms, indexed addressing, update forms, clamping,
+   truncation and FTZ corners). See
    [the audit](../audits/2026-10-18-code-audit.md).
 
    The compiled loader harness (`tests/loader`) covers the load image the
@@ -174,6 +186,24 @@ first GX2 frame?
    mutation runs — reverting the frame and changing one authored data word);
    the v208 demo afterwards is unchanged (`r3 = 0x031FA4C8`,
    `proc_ui.ProcUIInit` still reported, strict exit 5).
+
+10. **Independent decode cross-check (2026-10-19).** The whole decompressed
+    `.text` was disassembled with rizin through REA (`asm.arch=ppc`,
+    `asm.bits=32`, `asm.cpu=ps`, `io.va=false`, 36 chunks of 262,144 words)
+    and compared word by word with the decoder through the new
+    `tools/ppcx/xcheck.js`. Result over all 9,248,515 words: 5,843,694 with
+    identical canonical mnemonics (63.1852%), 3,404,768 differing only by a
+    documented assembler alias (36.8142% — `mr`/`or`, `li`/`addi`,
+    `slwi`/`rlwinm`, `btlr`/`bclr`, `subc`/`subfc`, `trap`/`twu`/`tw`),
+    **zero real disagreements**, and the same 53 data/illegal words
+    rejected by both sides. The 31 alias classes observed were reviewed one
+    by one and are all standard extended mnemonics. The check found the
+    `lhzux`/`lhaux` defect above; it also verified that rizin's
+    `asm.cpu=ps` model decodes the paired-single encodings this target
+    executes without the VSX ambiguity seen under the default CPU. The dump
+    is game-derived and stays under `build/`; the comparison tool and the
+    rizin recipe are in the repository, and the check is intentionally not
+    part of CI because it needs an external disassembler.
 
 ## Evidence quality
 
@@ -238,8 +268,9 @@ first GX2 frame?
   `FUN_02c5e5f4` → … → `FUN_0309bbb0`, the only `GX2Init` site at
   `0x0309BC80`) with dispatch tracing, then model GX2 calls as
   log-only no-ops and count frames before attempting any real rendering.
-- **Opcode gaps:** none left that the game executes. The remaining 64
-  unknown/data words (47 zero words, 11 `op31-xo375`, 6 `op0`) need a
-  manual review for false decodes or embedded data.
+- **Opcode gaps:** none left that the game executes. The remaining 53
+  unknown/data words (47 zero words, 6 `op0`) need a manual review for
+  false decodes or embedded data; the external cross-check independently
+  reports `invalid` for the same words.
 - **Scale test:** a `--follow` stress run from the entry point to measure
   translation throughput and generated-code size for the full closure.

@@ -52,11 +52,11 @@ byte-identical output on the v208 demo).
 
 The pipeline runs against the real module (9,248,515 words of `.text`):
 
-* `analyze` finishes in ~2.3 s: 99.9993% of words decode to supported
-  instructions (9,248,451 of 9,248,515), none are known-but-unsupported and
-  64 words are unknown/data — re-measured on 2026-10-19 after implementing
-  `psq_l`/`psq_st` and the indexed forms (post-audit snapshot: 97.71% /
-  2.29% / 0.00%).
+* `analyze` finishes in ~2.3 s: 99.9994% of words decode to supported
+  instructions (9,248,462 of 9,248,515), none are known-but-unsupported and
+  53 words are unknown/data — re-measured on 2026-10-19 after implementing
+  `psq_l`/`psq_st`, the indexed forms and the external decode cross-check
+  below (post-audit snapshot: 97.71% / 2.29% / 0.00%).
 * Boundary discovery finds 96,874 branch-derived starts (the local Ghidra
   census of the same module has 97,363) plus 104,026 pointer-only starts
   taken from `.rodata` code pointers (vtable/callback/constant-getter table
@@ -86,6 +86,29 @@ The pipeline runs against the real module (9,248,515 words of `.text`):
 
 Full notes, metrics and the remaining gaps towards a first GX2 frame are in
 `docs/research/2026-10-recompiler-prototype.md`.
+
+## Independent decode cross-check
+
+`xcheck` compares the decoder against an external disassembler, word by word:
+
+```sh
+node tools/ppcx/xcheck.js --text build/xcheck/text.bin --dumps build/xcheck
+```
+
+The dump is produced out of band with rizin (through REA on Windows, where the
+Ghidra lane rejects PowerPC RPX) using `asm.arch=ppc`, `asm.bits=32`,
+`asm.cpu=ps`, `cfg.bigendian=true` and `io.va=false`; the exact commands are in
+the header of `xcheck.js` and the workflow is documented in
+`docs/reverse-engineering/rea-guidance.md`. The tool buckets every difference
+(identical mnemonic, documented assembler alias, paired-single/AltiVec
+overlap, record-suffix mismatch, real mismatch, undecodable word, missing
+line) and exits non-zero on a real disagreement.
+
+Measured on v208 (2026-10-19, all 9,248,515 words of the decompressed
+`.text`): 5,843,694 identical mnemonics (63.1852%), 3,404,768 assembler
+aliases (36.8142%), **0 real disagreements**, and the same 53 data/illegal
+words rejected by both. The check found the `lhzux`/`lhaux` encoding defect
+fixed above; the dump is game-derived and stays under `build/`.
 
 ## Load image (sections, `.bss` and data relocations)
 

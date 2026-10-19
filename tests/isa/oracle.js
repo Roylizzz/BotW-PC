@@ -679,9 +679,13 @@ function step31(s, w, onUnsupported) {
         case 55: { const ea = xEA(s, w); s.gpr[RA(w)] = ea; s.gpr[d] = rd32(s, ea); return; }
         case 87: s.gpr[d] = rd8(s, xEA(s, w)); return;
         case 119: { const ea = xEA(s, w); s.gpr[RA(w)] = ea; s.gpr[d] = rd8(s, ea); return; }
+        /* Halfword indexed loads: 279 lhzx, 311 lhzux (zero-extending),
+         * 343 lhax, 375 lhaux (algebraic). The update forms write the
+         * effective address into rA before the load lands in rT. */
         case 279: s.gpr[d] = rd16(s, xEA(s, w)); return;
         case 343: s.gpr[d] = u32(s32((rd16(s, xEA(s, w)) << 16) >> 16)); return;
-        case 311: { const ea = xEA(s, w); s.gpr[RA(w)] = ea; s.gpr[d] = u32(s32((rd16(s, ea) << 16) >> 16)); return; }
+        case 311: { const ea = xEA(s, w); s.gpr[RA(w)] = ea; s.gpr[d] = rd16(s, ea); return; }
+        case 375: { const ea = xEA(s, w); s.gpr[RA(w)] = ea; s.gpr[d] = u32(s32((rd16(s, ea) << 16) >> 16)); return; }
         case 151: wr32(s, xEA(s, w), s.gpr[RT(w)]); return;
         case 183: { const ea = xEA(s, w); wr32(s, ea, s.gpr[RT(w)]); s.gpr[RA(w)] = ea; return; }
         case 215: wr8(s, xEA(s, w), s.gpr[RT(w)]); return;

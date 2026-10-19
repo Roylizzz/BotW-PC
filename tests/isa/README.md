@@ -29,8 +29,11 @@ node tests/isa/run.js            # differential run, non-zero exit on mismatch
 node --test tests/isa/isa.test.js
 ```
 
-The corpus is 221 programs (907 compared state lines); `run.js` prints both
-counts.
+The corpus is 226 programs (927 compared state lines); `run.js` prints both
+counts. The 2026-10-19 decode cross-check added the `lhzx`/`lhzux`/`lhax`/
+`lhaux` family (including the update order when rT = rA) after the external
+rizin dump showed that the oracle and the decoder shared a wrong XO 311/375
+mapping.
 
 Compiler discovery, in order: `PPCX_CC`, `cc`, `gcc`, `clang`, `tcc` on PATH,
 then the usual TCC install locations on Windows. Without a compiler the

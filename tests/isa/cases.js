@@ -215,6 +215,31 @@ function buildCases() {
         {},
         [{ addr: MEM + 4, hex: bytes(0xca, 0xfe, 0xba, 0xbe) }]
     );
+    /* Halfword indexed loads: lhzx (279), lhzux (311), lhax (343), lhaux
+     * (375). 0x8080 in memory separates zero- from sign-extension, the update
+     * forms write rA with the effective address first — a load into rA keeps
+     * the loaded value. */
+    const hw = [{ addr: MEM, hex: bytes(0x80, 0x80, 0x7f, 0x7f) }];
+    add("lhzx zero-extends", [A.addi(4, 0, MEM), A.addi(5, 0, 0), A.x(279, 3, 4, 5), A.blr], {}, hw);
+    add(
+        "lhzux zero-extends and updates rA",
+        [A.addi(4, 0, MEM + 2), A.addi(5, 0, -2), A.x(311, 3, 4, 5), A.blr],
+        {},
+        hw
+    );
+    add("lhax sign-extends", [A.addi(4, 0, MEM), A.addi(5, 0, 0), A.x(343, 3, 4, 5), A.blr], {}, hw);
+    add(
+        "lhaux sign-extends and updates rA",
+        [A.addi(4, 0, MEM + 2), A.addi(5, 0, -2), A.x(375, 3, 4, 5), A.blr],
+        {},
+        hw
+    );
+    add(
+        "lhaux with rT = rA keeps the loaded value",
+        [A.addi(4, 0, MEM), A.addi(5, 0, 0), A.x(375, 4, 4, 5), A.blr],
+        {},
+        hw
+    );
     add(
         "stwu stores the old base first",
         [A.addi(1, 0, MEM + 16), A.stwu(1, 1, -16), A.blr],

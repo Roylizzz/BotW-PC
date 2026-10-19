@@ -25,7 +25,7 @@
 ## Phase 2C — Scale and instrumentation
 
 - [ ] Deterministic sharded generated C, linked guest function registry and content-addressed caches.
-- [ ] Cross-check discovered function starts/indirect targets/jump tables against local Ghidra results.
+- [ ] Cross-check discovered function starts/indirect targets/jump tables against local Ghidra results. *(Decode cross-check landed 2026-10-19: all 9,248,515 words compared against a rizin dump through `tools/ppcx/xcheck.js` — zero real disagreements, 53 data/illegal words rejected by both sides; the function-start/Ghidra comparison is still open.)*
 - [ ] Add reference interpreter fallback only after copyright/license and correctness review.
 - [ ] Implement guest scheduling/locking/time behavior needed by earliest boot path; fuzz malformed binary inputs.
 - [ ] Measure runtime/host resident memory and compilation throughput; keep derived game output under ignored build/.

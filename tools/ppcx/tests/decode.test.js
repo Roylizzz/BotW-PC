@@ -125,6 +125,35 @@ test("decodes or (mr r3, r4)", () => {
     assert.equal(d.rb, 4);
 });
 
+test("decodes the halfword indexed load family (zero/algebraic, update)", () => {
+    /* Found by the 2026-10-19 rizin cross-check: XO 311 is lhzux (the
+     * zero-extending update load) and XO 375 is lhaux; the table used to
+     * name 311 lhaux and left 375 undecoded, so every lhzux in the module
+     * was translated as a sign-extending load. */
+    const x = (xo, rt, ra, rb) => ((31 << 26) | (rt << 21) | (ra << 16) | (rb << 11) | (xo << 1)) >>> 0;
+    const lhzx = decode(x(279, 3, 4, 5));
+    assert.equal(lhzx.name, "lhzx");
+    assert.equal(lhzx.access, "u16");
+    assert.equal(lhzx.update, false);
+    const lhzux = decode(x(311, 3, 4, 5));
+    assert.equal(lhzux.name, "lhzux");
+    assert.equal(lhzux.access, "u16");
+    assert.equal(lhzux.update, true);
+    const lhax = decode(x(343, 3, 4, 5));
+    assert.equal(lhax.name, "lhax");
+    assert.equal(lhax.access, "s16");
+    const lhaux = decode(x(375, 3, 4, 5));
+    assert.equal(lhaux.name, "lhaux");
+    assert.equal(lhaux.access, "s16");
+    assert.equal(lhaux.update, true);
+    for (const d of [lhzx, lhzux, lhax, lhaux]) {
+        assert.equal(d.supported, true);
+        assert.equal(d.rt, 3);
+        assert.equal(d.ra, 4);
+        assert.equal(d.rb, 5);
+    }
+});
+
 test("decodes add", () => {
     const d = decode(0x7c632214); // add r3, r3, r4
     assert.equal(d.name, "add");
