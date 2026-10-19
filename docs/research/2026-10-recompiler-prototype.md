@@ -74,13 +74,17 @@ first GX2 frame?
 
    ```
    ppcx: entry 0x031FA4CC, 1 translated function(s)
-   ppcx: HLE call #1: proc_ui.ProcUIInit (import 359)
    ppcx: entry returned, r3 = 0x031FA4C8
+   ppcx: HLE calls: 1 (unimplemented services remain)
    ```
 
-   This exercises decode, relocation-driven HLE substitution, the tail-call
-   convention, the dispatcher, the HLE name table and the TCC ABI in one
-   shot — and confirms the boot-path note's reading of that method.
+   `PPCX_HLE_TRACE=1` logs the per-call line (`HLE unimplemented #1:
+   proc_ui.ProcUIInit (import 359) [diagnostic no-op]`) and
+   `PPCX_HLE_STRICT=1` stops there with the register dump and exit code 5;
+   four coreinit core-identity calls are modeled and `ProcUIInit` is not one
+   of them. This exercises decode, relocation-driven HLE substitution, the
+   tail-call convention, the dispatcher, the HLE name table and the TCC ABI
+   in one shot — and confirms the boot-path note's reading of that method.
 
 7. **Runtime skeleton.** One flat arena of `0xC2000000` bytes covers every
    address the module is linked for (import slots sit at `0xC0000000`);
@@ -89,7 +93,8 @@ first GX2 frame?
    section uses: `.text` ends at `0x04347C2C`, data sections end at
    `~0x105DB1C0`); unsupported instructions and unregistered targets stop
    with an address + register dump. `PPCX_HLE_TRACE=1` logs every HLE call,
-   `PPCX_HLE_STRICT=1` aborts on the first.
+   `PPCX_HLE_STRICT=1` aborts on the first unimplemented one (exit code 5);
+   four coreinit identity calls are modeled and stay available.
 
 8. **Audit correction pass (2026-10-18).** An independent source audit fixed
    thirteen semantic defects in the runtime ABI, the decoder and the

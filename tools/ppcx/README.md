@@ -64,9 +64,16 @@ The pipeline runs against the real module (9,248,515 words of `.text`):
 
   ```
   ppcx: entry 0x031FA4CC, 1 translated function(s)
-  ppcx: HLE call #1: proc_ui.ProcUIInit (import 359)
   ppcx: entry returned, r3 = 0x031FA4C8
+  ppcx: HLE calls: 1 (unimplemented services remain)
   ```
+
+  `PPCX_HLE_TRACE=1` adds the per-call line
+  (`ppcx: HLE unimplemented #1: proc_ui.ProcUIInit (import 359)
+  [diagnostic no-op]`) and `PPCX_HLE_STRICT=1` stops on the first
+  unimplemented call with the register dump and exit code 5. Four coreinit
+  core-identity calls are modeled (`src/runtime/src/ppcx_hle.c`);
+  `proc_ui.ProcUIInit` is not one of them.
 
 Full notes, metrics and the remaining gaps towards a first GX2 frame are in
 `docs/research/2026-10-recompiler-prototype.md`.
@@ -170,6 +177,10 @@ registration and boundary/unaligned/host accesses, nine illegal accesses
 each failing in its own process with exit code 9 and an exact diagnostic,
 the fault hook and run-to-run determinism (`node tests/mem/run.js` →
 `mem: OK`).
+
+The native HLE contract test (`tests/hle/test_hle.c`, compiled with
+`cc -Wall -Wextra -Werror` in CI) covers the four modeled coreinit
+core-identity calls, exact-name matching and register preservation.
 
 All tests use only synthetic instruction sequences, synthetic import tables
 and synthetic RPX fixtures; no game data is required.
