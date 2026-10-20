@@ -4,8 +4,9 @@
  * Models the core-identity calls used by this single-thread prototype (its
  * only guest context is pinned to Wii U main core 1), the guest-memory and
  * cache primitives whose contracts are purely mechanical, and the proc_ui
- * lifecycle. It is NOT a scheduler, a filesystem, a threading implementation
- * or a HOME-menu integration.
+ * lifecycle, and the headless input services used by the input manager. It is
+ * NOT a scheduler, a filesystem, a threading implementation, a HOME-menu
+ * integration or a host input backend.
  *
  * The flat arena has no data cache: guest-visible memory is always coherent,
  * so the cache-maintenance calls are typed no-ops that still validate their
@@ -214,6 +215,223 @@ static void hle_procui_shutdown(Cpu *cpu) {
     g_procui.status = PPCX_PROCUI_STATUS_EXITING;
 }
 
+/* ---- input ------------------------------------------------------------
+ *
+ * Public contracts checked against wut padscore/kpad.h, padscore/wpad.h,
+ * vpad/input.h and vpadbase/base.h. This is a deterministic placeholder:
+ * one neutral virtual GamePad is present on VPAD channel 0. A read returns one
+ * zero-filled status record, which is a valid "no buttons, centered sticks,
+ * no touch" sample. No KPAD/WPAD controller is present, so KPAD reads produce
+ * no samples and WPAD probes report no controller. No host input is read and
+ * no callback fires.
+ */
+enum {
+    PPCX_KPAD_ERROR_NO_SAMPLES = -1,
+    PPCX_KPAD_ERROR_INVALID_CONTROLLER = -2,
+    PPCX_KPAD_ERROR_UNINITIALIZED = -5,
+    PPCX_VPAD_READ_SUCCESS = 0,
+    PPCX_VPAD_READ_NO_SAMPLES = -1,
+    PPCX_VPAD_READ_INVALID_CONTROLLER = -2,
+    PPCX_WPAD_ERROR_NO_CONTROLLER = -1
+};
+
+static PpcxInputState g_input;
+
+const PpcxInputState *ppcx_hle_input_state(void) {
+    return &g_input;
+}
+
+void ppcx_hle_input_reset(void) {
+    memset(&g_input, 0, sizeof g_input);
+}
+
+static void hle_kpad_get_mpls_work_size(Cpu *cpu) {
+    g_input.kpad_mpls_size_calls++;
+    cpu->gpr[3] = PPCX_INPUT_MPLS_WORK_SIZE;
+}
+
+static void hle_kpad_init_ex(Cpu *cpu) {
+    u32 buffer = cpu->gpr[3];
+    u32 count = cpu->gpr[4];
+    g_input.kpad_init_calls++;
+    if (count != 0u && buffer == 0u) {
+        g_input.kpad_invalid_init++;
+        g_input.kpad_initialized = 0u;
+        return;
+    }
+    g_input.kpad_initialized = 1u;
+    g_input.kpad_init_buffer = buffer;
+    g_input.kpad_init_count = count;
+}
+
+static void hle_kpad_set_mpls_workarea(Cpu *cpu) {
+    g_input.kpad_mpls_workarea_calls++;
+    g_input.kpad_mpls_workarea = cpu->gpr[3];
+}
+
+static void hle_kpad_read_ex(Cpu *cpu) {
+    u32 chan = cpu->gpr[3];
+    u32 count = cpu->gpr[5];
+    u32 error_ea = cpu->gpr[6];
+    u32 error;
+
+    g_input.kpad_read_calls++;
+    g_input.kpad_last_chan = chan;
+    g_input.kpad_last_count = count;
+
+    if (!g_input.kpad_initialized) {
+        error = (u32)PPCX_KPAD_ERROR_UNINITIALIZED;
+        g_input.kpad_invalid_reads++;
+    } else if (chan >= PPCX_INPUT_KPAD_CHANNELS) {
+        error = (u32)PPCX_KPAD_ERROR_INVALID_CONTROLLER;
+        g_input.kpad_invalid_reads++;
+    } else {
+        /* The model has no Wii Remote/Pro Controller: even a non-zero count
+         * produces no sample and the guest buffer is left untouched. */
+        error = (u32)PPCX_KPAD_ERROR_NO_SAMPLES;
+        g_input.kpad_no_samples++;
+    }
+
+    if (error_ea != 0u) ppcx_wr32(error_ea, error);
+    g_input.kpad_last_error = error;
+    cpu->gpr[3] = 0u;
+}
+
+static void hle_vpad_read(Cpu *cpu) {
+    u32 chan = cpu->gpr[3];
+    u32 buffers = cpu->gpr[4];
+    u32 count = cpu->gpr[5];
+    u32 error_ea = cpu->gpr[6];
+    u32 error = (u32)PPCX_VPAD_READ_SUCCESS;
+    u32 samples = 0u;
+
+    g_input.vpad_read_calls++;
+    g_input.vpad_last_chan = chan;
+    g_input.vpad_last_count = count;
+
+    if (chan >= PPCX_INPUT_VPAD_CHANNELS) {
+        error = (u32)PPCX_VPAD_READ_INVALID_CONTROLLER;
+        g_input.vpad_invalid_reads++;
+    } else if (count == 0u) {
+        error = (u32)PPCX_VPAD_READ_NO_SAMPLES;
+        g_input.vpad_no_samples++;
+    } else if (buffers == 0u) {
+        error = (u32)PPCX_VPAD_READ_NO_SAMPLES;
+        g_input.vpad_invalid_reads++;
+    } else if (chan == 0u) {
+        hle_check_range(buffers, PPCX_VPAD_STATUS_SIZE, 1);
+        memset(ppcx_memory + (size_t)buffers, 0, PPCX_VPAD_STATUS_SIZE);
+        samples = 1u;
+        g_input.vpad_samples_returned++;
+    } else {
+        /* Valid GamePad channel, but the model has no second controller. */
+        error = (u32)PPCX_VPAD_READ_NO_SAMPLES;
+        g_input.vpad_no_samples++;
+    }
+
+    if (error_ea != 0u) ppcx_wr32(error_ea, error);
+    g_input.vpad_last_error = error;
+    cpu->gpr[3] = samples;
+}
+
+static void hle_vpad_get_tp_calibrated_point(Cpu *cpu) {
+    u32 chan = cpu->gpr[3];
+    u32 out_ea = cpu->gpr[4];
+    u32 in_ea = cpu->gpr[5];
+
+    if (chan >= PPCX_INPUT_VPAD_CHANNELS || out_ea == 0u || in_ea == 0u) {
+        g_input.vpad_touch_invalid++;
+        return;
+    }
+    hle_check_range(in_ea, PPCX_VPAD_TOUCH_SIZE, 0);
+    hle_check_range(out_ea, PPCX_VPAD_TOUCH_SIZE, 1);
+    {
+        /* The identity calibration must tolerate aliasing; use a temporary
+         * because the local TCC memmove was measured not to. */
+        u8 tmp[PPCX_VPAD_TOUCH_SIZE];
+        memcpy(tmp, ppcx_memory + (size_t)in_ea, PPCX_VPAD_TOUCH_SIZE);
+        memcpy(ppcx_memory + (size_t)out_ea, tmp, PPCX_VPAD_TOUCH_SIZE);
+    }
+    g_input.vpad_touch_calls++;
+}
+
+static void hle_vpad_set_sampling_callback(Cpu *cpu) {
+    u32 chan = cpu->gpr[3];
+    u32 callback = cpu->gpr[4];
+    u32 previous = 0u;
+
+    g_input.vpad_sampling_callback_calls++;
+    g_input.last_callback = callback;
+    if (chan < PPCX_INPUT_VPAD_CHANNELS) {
+        previous = g_input.vpad_sampling_callbacks[chan];
+        g_input.vpad_sampling_callbacks[chan] = callback;
+    } else {
+        g_input.vpad_sampling_callback_invalid++;
+    }
+    cpu->gpr[3] = previous;
+}
+
+static void hle_vpad_control_motor(Cpu *cpu) {
+    u32 chan = cpu->gpr[3];
+    u32 pattern = cpu->gpr[4];
+    u32 length = cpu->gpr[5] & 0xffu;
+
+    if (chan >= PPCX_INPUT_VPAD_CHANNELS || (length != 0u && pattern == 0u)) {
+        g_input.vpad_motor_invalid++;
+        cpu->gpr[3] = (u32)-1;
+        return;
+    }
+    if (length != 0u) hle_check_range(pattern, length, 0);
+    /* Accepted and discarded: the headless model has no rumble backend. */
+    g_input.vpad_motor_calls++;
+    cpu->gpr[3] = 0u;
+}
+
+static void hle_vpad_stop_motor(Cpu *cpu) {
+    (void)cpu;
+    g_input.vpad_stop_motor_calls++;
+}
+
+static void hle_vpad_gyro(Cpu *cpu) {
+    g_input.vpad_gyro_calls++;
+    g_input.last_gyro_chan = cpu->gpr[3];
+}
+
+static void hle_vpad_gyro_mode(Cpu *cpu) {
+    g_input.vpad_gyro_calls++;
+    g_input.last_gyro_chan = cpu->gpr[3];
+    g_input.last_gyro_mode = cpu->gpr[4];
+}
+
+static void hle_wpad_probe(Cpu *cpu) {
+    u32 chan = cpu->gpr[3];
+    u32 out_ea = cpu->gpr[4];
+
+    g_input.wpad_probe_calls++;
+    g_input.last_probe_chan = chan;
+    if (out_ea != 0u) {
+        hle_check_range(out_ea, 4u, 1);
+        ppcx_wr32(out_ea, 0u); /* WPAD_EXT_CORE: no extension known */
+        g_input.last_probe_extension = 0u;
+    }
+    cpu->gpr[3] = (u32)PPCX_WPAD_ERROR_NO_CONTROLLER;
+}
+
+static void hle_wpad_start_sync(Cpu *cpu) {
+    g_input.wpad_sync_calls++;
+    cpu->gpr[3] = 0u; /* FALSE: no Bluetooth sync backend */
+}
+
+static void hle_wpad_enable_urcc(Cpu *cpu) {
+    g_input.wpad_urcc_calls++;
+    g_input.last_urcc_enable = cpu->gpr[3];
+}
+
+static void hle_vpadbase_headphone_status(Cpu *cpu) {
+    g_input.headphone_calls++;
+    cpu->gpr[3] = 0u; /* no headphones connected */
+}
+
 static const PpcxHleEntry hle_registry[] = {
     { "coreinit.OSGetCoreCount", hle_core_count },
     { "coreinit.OSGetCoreId", hle_core_id },
@@ -233,6 +451,24 @@ static const PpcxHleEntry hle_registry[] = {
     { "proc_ui.ProcUIDrawDoneRelease", hle_procui_draw_done_release },
     { "proc_ui.ProcUIRegisterCallback", hle_procui_register_callback },
     { "proc_ui.ProcUIShutdown", hle_procui_shutdown },
+    { "padscore.KPADGetMplsWorkSize", hle_kpad_get_mpls_work_size },
+    { "padscore.KPADInitEx", hle_kpad_init_ex },
+    { "padscore.KPADSetMplsWorkarea", hle_kpad_set_mpls_workarea },
+    { "padscore.KPADReadEx", hle_kpad_read_ex },
+    { "padscore.WPADEnableURCC", hle_wpad_enable_urcc },
+    { "padscore.WPADProbe", hle_wpad_probe },
+    { "padscore.WPADStartSyncDevice", hle_wpad_start_sync },
+    { "vpad.VPADControlMotor", hle_vpad_control_motor },
+    { "vpad.VPADDisableGyroDirRevise", hle_vpad_gyro },
+    { "vpad.VPADEnableGyroAccRevise", hle_vpad_gyro },
+    { "vpad.VPADGetTPCalibratedPoint", hle_vpad_get_tp_calibrated_point },
+    { "vpad.VPADRead", hle_vpad_read },
+    { "vpad.VPADSetGyroAccReviseParam", hle_vpad_gyro },
+    { "vpad.VPADSetGyroDirection", hle_vpad_gyro_mode },
+    { "vpad.VPADSetGyroZeroDriftMode", hle_vpad_gyro_mode },
+    { "vpad.VPADSetSamplingCallback", hle_vpad_set_sampling_callback },
+    { "vpad.VPADStopMotor", hle_vpad_stop_motor },
+    { "vpadbase.VPADBASEGetHeadphoneStatus", hle_vpadbase_headphone_status },
 };
 
 int ppcx_hle_dispatch_named(Cpu *cpu, const char *qualified_name) {

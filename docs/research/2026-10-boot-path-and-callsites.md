@@ -1,7 +1,8 @@
 # Boot path and relocation call-site map
 
-- **Date:** 2026-10-18 (rev. 6: prior-art cross-check with the public
-  Switch 1.5.0 symbol database)
+- **Date:** 2026-10-18 (rev. 7: input call-site map and strict wrapper
+  runs; rev. 6 was the prior-art cross-check with the public Switch 1.5.0
+  symbol database)
 - **Game version:** Wii U update v208 (`code/U-King.rpx`)
 - **Tooling:** `tools/rpxinfo relocs`, Ghidra 12.1.4 headless, local scripts
 - **Contributor:** @Roylizzz
@@ -210,15 +211,61 @@ APIs?
     database for the Switch build and are used as vocabulary here, never
     as Wii U addresses.
 
+12. **Input services: KPAD/VPAD initialization and polling sites (2026-10-20).**
+    Grouping the 18 non-audio input imports by the containing analysis
+    function isolates the v208 input-manager methods (function boundaries
+    from `analysis.functionStarts`; call sites from `.rela.text`):
+    - `0x030DA08C` (220 B) calls `KPADGetMplsWorkSize` at `0x030DA134`,
+      `KPADInitEx` at `0x030DA130` (ring buffer `r31+0x14`, count 0x40) and
+      `KPADSetMplsWorkarea` at `0x030DA144`; it has no other import calls.
+    - `0x030DA168` (336 B) calls `KPADReadEx` at `0x030DA1C0`; the caller
+      passes 16 status entries and stores the sample count/error at
+      `+0xF00`/`+0xF04`, confirming `sizeof(KPADStatus) = 0xF0`.
+    - `0x030D9F24` (244 B) calls `VPADRead` at `0x030D9F48` with 16 entries
+      and count/error at `+0xAC4`/`+0xAC8`, confirming
+      `sizeof(VPADStatus) = 0xAC`. It is a method, not a standalone entry:
+      `r3` is copied into `r31` and used as the status-context base, so
+      starting it with the runtime's `r3 = 0` writes at `0x14` and faults.
+    - `0x030D89F8` (1,296 B) calls `VPADGetTPCalibratedPoint` three times
+      (`0x030D8C5C`, `0x030D8D10`, `0x030D8D68`).
+    - `0x02C57CBC` (360 B) calls the five VPAD gyro setters;
+      `0x031A94A4` (180 B) calls `VPADSetSamplingCallback`; `0x030D900C`
+      (712 B) calls `VPADControlMotor` twice and `VPADStopMotor` once;
+      `0x030C7558`/`0x030C7680` call `WPADProbe`; `0x02C54478` (4,016 B)
+      calls `WPADStartSyncDevice`; `0x031A95A4` (548 B) calls
+      `WPADEnableURCC`; `0x030D730C` calls
+      `VPADBASEGetHeadphoneStatus`.
+    - The 18 modeled imports account for 22 REL24 sites; the eight
+      remaining padscore sites are the Wii Remote audio/motor path
+      (`WENCGetEncodeData` 1, `WPADCanSendStreamData` 1,
+      `WPADControlMotor` 2, `WPADControlSpeaker` 3,
+      `WPADSendStreamData` 1) and stay unmodeled. Signatures and status
+      values were checked against wut `padscore/kpad.h`, `padscore/wpad.h`,
+      `vpad/input.h` and `vpadbase/base.h`.
+    - Measured strict runs with the 31-segment image: the no-argument
+      wrapper `0x030C7558` (13 instructions) calls `WPADProbe(0, &type)`,
+      reports `r3 = -1` and returns 0; the no-argument wrapper `0x030D730C`
+      (12 instructions) calls `VPADBASEGetHeadphoneStatus(0)`, reports `r3 =
+      0` and returns 0. Both exit 0. The model presents one neutral virtual
+      GamePad on VPAD channel 0 and no KPAD/WPAD controller; this is not
+      host input.
+
 ## Evidence quality
 
 - **Observed:** relocation types/counts, `bl` instructions at REL24
   offsets, the single `GX2Init` relocation, caller chains via Ghidra
-  references.
+  references, the 18 input import sites with their containing analysis
+  functions and the caller-side buffer offsets (`+0xF00`/`+0xF04` for 16
+  KPAD status entries, `+0xAC4`/`+0xAC8` for 16 VPAD entries), plus the
+  strict wrapper runs at `0x030C7558` and `0x030D730C`.
 - **Derived:** the startup role (`GameConfig`, `RootTask`, 854×480)
-  comes from decompiled strings and constants.
+  comes from decompiled strings and constants; the input ABI sizes and
+  error values come from wut headers, and the headless policy from
+  [ADR-0003](../architecture/decisions/0003-headless-input-policy.md).
 - **Unknown:** loader patch mechanics; whether every REL24 entry is a
-  true call (tail calls and trampolines may be mixed in).
+  true call (tail calls and trampolines may be mixed in); how a host input
+  backend should map to VPAD/KPAD and whether the game requires a Wii
+  Remote/Pro Controller path for any screen.
 
 ## Open questions
 

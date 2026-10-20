@@ -335,6 +335,342 @@ static int test_procui_lifecycle(void) {
     return 0;
 }
 
+static int check_dispatch_r3(const char *name, Cpu *cpu, u32 expected) {
+    Cpu before = *cpu;
+    if (ppcx_hle_dispatch_named(cpu, name) != 1) return fail("input import unresolved");
+    if (cpu->gpr[3] != expected) {
+        fprintf(stderr, "hle: %s returned 0x%08x, expected 0x%08x\n", name, cpu->gpr[3], expected);
+        return 1;
+    }
+    before.gpr[3] = expected;
+    if (memcmp(cpu, &before, sizeof *cpu) != 0) return fail("input import changed unexpected registers");
+    return 0;
+}
+
+static int check_dispatch_void(const char *name, Cpu *cpu) {
+    Cpu before = *cpu;
+    if (ppcx_hle_dispatch_named(cpu, name) != 1) return fail("void input import unresolved");
+    if (memcmp(cpu, &before, sizeof *cpu) != 0) return fail("void input import changed registers");
+    return 0;
+}
+
+static int test_input_models(void) {
+    static const char *const gyro_noops[] = {
+        "vpad.VPADEnableGyroAccRevise",
+        "vpad.VPADDisableGyroDirRevise",
+        "vpad.VPADSetGyroAccReviseParam",
+        "vpad.VPADSetGyroDirection",
+        "vpad.VPADSetGyroZeroDriftMode",
+    };
+    Cpu cpu;
+    const PpcxInputState *s;
+    unsigned i;
+
+    ppcx_hle_input_reset();
+    s = ppcx_hle_input_state();
+    if (s->kpad_initialized != 0u || s->kpad_read_calls != 0u || s->vpad_read_calls != 0u) {
+        return fail("input reset state");
+    }
+
+    /* KPAD before init reports UNINITIALIZED and must not touch the buffer. */
+    memset(arena + 0x800, 0xaa, 0x100);
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 0u;
+    cpu.gpr[4] = 0x800u;
+    cpu.gpr[5] = 1u;
+    cpu.gpr[6] = 0x8f0u;
+    if (check_dispatch_r3("padscore.KPADReadEx", &cpu, 0u) != 0) return 1;
+    if (ppcx_rd32(0x8f0u) != 0xfffffffbU) return fail("KPAD uninitialized error");
+    if (arena[0x800] != 0xaau) return fail("KPAD uninitialized read wrote a sample");
+    s = ppcx_hle_input_state();
+    if (s->kpad_invalid_reads != 1u || s->kpad_last_chan != 0u || s->kpad_last_error != 0xfffffffbU) {
+        return fail("KPAD uninitialized state");
+    }
+
+    /* KPADInitEx(NULL, 64) is rejected, but KPADInitEx(NULL, 0) is the
+     * documented null-buffer form and must initialize the model. */
+    memset(&cpu, 0, sizeof cpu);
+    cpu.gpr[4] = 64u;
+    if (check_dispatch_void("padscore.KPADInitEx", &cpu) != 0) return 1;
+    s = ppcx_hle_input_state();
+    if (s->kpad_initialized != 0u || s->kpad_invalid_init != 1u) return fail("KPADInitEx accepted NULL buffer with count");
+
+    memset(&cpu, 0, sizeof cpu);
+    if (check_dispatch_void("padscore.KPADInitEx", &cpu) != 0) return 1;
+    s = ppcx_hle_input_state();
+    if (s->kpad_initialized != 1u || s->kpad_init_calls != 2u) return fail("KPADInitEx NULL,0 state");
+    if (s->kpad_init_buffer != 0u || s->kpad_init_count != 0u) return fail("KPADInitEx NULL,0 arguments");
+
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 0x700u;
+    cpu.gpr[4] = 64u;
+    if (check_dispatch_void("padscore.KPADInitEx", &cpu) != 0) return 1;
+    s = ppcx_hle_input_state();
+    if (s->kpad_initialized != 1u || s->kpad_init_calls != 3u) return fail("KPADInitEx state");
+    if (s->kpad_init_buffer != 0x700u || s->kpad_init_count != 64u) return fail("KPADInitEx arguments");
+
+    memset(&cpu, 0x5a, sizeof cpu);
+    if (check_dispatch_r3("padscore.KPADGetMplsWorkSize", &cpu, PPCX_INPUT_MPLS_WORK_SIZE) != 0) return 1;
+    s = ppcx_hle_input_state();
+    if (s->kpad_mpls_size_calls != 1u) return fail("KPADGetMplsWorkSize count");
+
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 0x900u;
+    if (check_dispatch_void("padscore.KPADSetMplsWorkarea", &cpu) != 0) return 1;
+    s = ppcx_hle_input_state();
+    if (s->kpad_mpls_workarea_calls != 1u || s->kpad_mpls_workarea != 0x900u) {
+        return fail("KPADSetMplsWorkarea state");
+    }
+
+    /* There is no KPAD/WPAD controller: a non-zero count still produces no
+     * sample and leaves the guest buffer untouched. */
+    memset(arena + 0x800, 0xaa, 0x100);
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 0u;
+    cpu.gpr[4] = 0x800u;
+    cpu.gpr[5] = 1u;
+    cpu.gpr[6] = 0x8f0u;
+    if (check_dispatch_r3("padscore.KPADReadEx", &cpu, 0u) != 0) return 1;
+    if (ppcx_rd32(0x8f0u) != 0xffffffffU) return fail("KPAD read error is not NO_SAMPLES");
+    if (arena[0x800] != 0xaau) return fail("KPAD read wrote a sample");
+    s = ppcx_hle_input_state();
+    if (s->kpad_no_samples != 1u || s->kpad_last_error != 0xffffffffU) return fail("KPAD read state");
+
+    memset(arena + 0x100, 0xcc, 0x100);
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 1u;
+    cpu.gpr[4] = 0x100u;
+    cpu.gpr[5] = 1u;
+    cpu.gpr[6] = 0x1f0u;
+    if (check_dispatch_r3("padscore.KPADReadEx", &cpu, 0u) != 0) return 1;
+    if (ppcx_rd32(0x1f0u) != 0xffffffffU) return fail("KPAD channel 1 error is not NO_SAMPLES");
+    if (arena[0x100] != 0xccu) return fail("KPAD channel 1 wrote a sample");
+    s = ppcx_hle_input_state();
+    if (s->kpad_no_samples != 2u) return fail("KPAD channel 1 count");
+
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 0u;
+    cpu.gpr[4] = 0x100u;
+    cpu.gpr[5] = 0u;
+    cpu.gpr[6] = 0x1f0u;
+    if (check_dispatch_r3("padscore.KPADReadEx", &cpu, 0u) != 0) return 1;
+    if (ppcx_rd32(0x1f0u) != 0xffffffffU) return fail("KPAD zero-count error is not NO_SAMPLES");
+    if (arena[0x100] != 0xccu) return fail("KPAD zero-count read wrote a sample");
+
+    /* A NULL status pointer is harmless while no sample is produced. */
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 0u;
+    cpu.gpr[4] = 0u;
+    cpu.gpr[5] = 1u;
+    cpu.gpr[6] = 0x1f0u;
+    if (check_dispatch_r3("padscore.KPADReadEx", &cpu, 0u) != 0) return 1;
+    if (ppcx_rd32(0x1f0u) != 0xffffffffU) return fail("KPAD NULL buffer error");
+    s = ppcx_hle_input_state();
+    if (s->kpad_invalid_reads != 1u || s->kpad_no_samples != 4u) return fail("KPAD NULL buffer count");
+
+    /* A channel outside 0..3 is an invalid controller, not merely no data. */
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = PPCX_INPUT_KPAD_CHANNELS;
+    cpu.gpr[4] = 0x100u;
+    cpu.gpr[5] = 1u;
+    cpu.gpr[6] = 0x1f0u;
+    if (check_dispatch_r3("padscore.KPADReadEx", &cpu, 0u) != 0) return 1;
+    if (ppcx_rd32(0x1f0u) != 0xfffffffeU) return fail("KPAD invalid-channel error");
+    if (arena[0x100] != 0xccu) return fail("KPAD invalid-channel read wrote a sample");
+    s = ppcx_hle_input_state();
+    if (s->kpad_invalid_reads != 2u || s->kpad_last_chan != PPCX_INPUT_KPAD_CHANNELS) {
+        return fail("KPAD invalid-channel state");
+    }
+
+    /* VPAD channel 0 returns one zero-filled 0xAC-byte sample. */
+    memset(arena + 0x200, 0xbb, 0xc0);
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 0u;
+    cpu.gpr[4] = 0x200u;
+    cpu.gpr[5] = 1u;
+    cpu.gpr[6] = 0x2b0u;
+    if (check_dispatch_r3("vpad.VPADRead", &cpu, 1u) != 0) return 1;
+    if (ppcx_rd32(0x2b0u) != 0u) return fail("VPAD read error is not OK");
+    for (i = 0; i < PPCX_VPAD_STATUS_SIZE; i++) {
+        if (arena[0x200 + i] != 0u) return fail("VPAD sample is not zero-filled");
+    }
+    for (i = 0x2b4; i < 0x2c0; i++) {
+        if (arena[i] != 0xbbu) return fail("VPAD read wrote past the error word");
+    }
+    s = ppcx_hle_input_state();
+    if (s->vpad_samples_returned != 1u || s->vpad_last_error != 0u) return fail("VPAD read state");
+
+    memset(arena + 0x300, 0xdd, 0xc0);
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 1u;
+    cpu.gpr[4] = 0x300u;
+    cpu.gpr[5] = 1u;
+    cpu.gpr[6] = 0x3b0u;
+    if (check_dispatch_r3("vpad.VPADRead", &cpu, 0u) != 0) return 1;
+    if (ppcx_rd32(0x3b0u) != 0xffffffffU) return fail("VPAD channel 1 error");
+    if (arena[0x300] != 0xddu) return fail("VPAD channel 1 wrote a sample");
+    s = ppcx_hle_input_state();
+    if (s->vpad_no_samples != 1u) return fail("VPAD channel 1 count");
+
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 2u;
+    cpu.gpr[4] = 0x300u;
+    cpu.gpr[5] = 1u;
+    cpu.gpr[6] = 0x3b0u;
+    if (check_dispatch_r3("vpad.VPADRead", &cpu, 0u) != 0) return 1;
+    if (ppcx_rd32(0x3b0u) != 0xfffffffeU) return fail("VPAD invalid-channel error");
+    s = ppcx_hle_input_state();
+    if (s->vpad_invalid_reads != 1u) return fail("VPAD invalid-channel count");
+
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 0u;
+    cpu.gpr[4] = 0x200u;
+    cpu.gpr[5] = 0u;
+    cpu.gpr[6] = 0x2b0u;
+    if (check_dispatch_r3("vpad.VPADRead", &cpu, 0u) != 0) return 1;
+    if (ppcx_rd32(0x2b0u) != 0xffffffffU) return fail("VPAD zero-count error");
+
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 0u;
+    cpu.gpr[4] = 0u;
+    cpu.gpr[5] = 1u;
+    cpu.gpr[6] = 0x2b0u;
+    if (check_dispatch_r3("vpad.VPADRead", &cpu, 0u) != 0) return 1;
+    if (ppcx_rd32(0x2b0u) != 0xffffffffU) return fail("VPAD NULL buffer error");
+    s = ppcx_hle_input_state();
+    if (s->vpad_invalid_reads != 2u) return fail("VPAD NULL buffer count");
+
+    /* Touch calibration copies eight bytes and tolerates aliasing. */
+    for (i = 0; i < PPCX_VPAD_TOUCH_SIZE; i++) arena[0x400 + i] = (u8)(1u + i);
+    memset(arena + 0x410, 0xee, PPCX_VPAD_TOUCH_SIZE);
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 0u;
+    cpu.gpr[4] = 0x410u;
+    cpu.gpr[5] = 0x400u;
+    if (check_dispatch_void("vpad.VPADGetTPCalibratedPoint", &cpu) != 0) return 1;
+    for (i = 0; i < PPCX_VPAD_TOUCH_SIZE; i++) {
+        if (arena[0x410 + i] != (u8)(1u + i)) return fail("VPAD touch copy is wrong");
+    }
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 0u;
+    cpu.gpr[4] = 0x400u;
+    cpu.gpr[5] = 0x400u;
+    if (check_dispatch_void("vpad.VPADGetTPCalibratedPoint", &cpu) != 0) return 1;
+    for (i = 0; i < PPCX_VPAD_TOUCH_SIZE; i++) {
+        if (arena[0x400 + i] != (u8)(1u + i)) return fail("VPAD touch aliasing corrupted the sample");
+    }
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 0u;
+    cpu.gpr[4] = 0u;
+    cpu.gpr[5] = 0x400u;
+    if (check_dispatch_void("vpad.VPADGetTPCalibratedPoint", &cpu) != 0) return 1;
+    s = ppcx_hle_input_state();
+    if (s->vpad_touch_calls != 2u || s->vpad_touch_invalid != 1u) return fail("VPAD touch state");
+
+    /* Sampling callback returns the previous pointer and never fires. */
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 0u;
+    cpu.gpr[4] = 0x1111u;
+    if (check_dispatch_r3("vpad.VPADSetSamplingCallback", &cpu, 0u) != 0) return 1;
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 0u;
+    cpu.gpr[4] = 0x2222u;
+    if (check_dispatch_r3("vpad.VPADSetSamplingCallback", &cpu, 0x1111u) != 0) return 1;
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 1u;
+    cpu.gpr[4] = 0x3333u;
+    if (check_dispatch_r3("vpad.VPADSetSamplingCallback", &cpu, 0u) != 0) return 1;
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 2u;
+    cpu.gpr[4] = 0x4444u;
+    if (check_dispatch_r3("vpad.VPADSetSamplingCallback", &cpu, 0u) != 0) return 1;
+    s = ppcx_hle_input_state();
+    if (s->vpad_sampling_callbacks[0] != 0x2222u || s->vpad_sampling_callbacks[1] != 0x3333u) {
+        return fail("VPAD sampling callback state");
+    }
+    if (s->vpad_sampling_callback_invalid != 1u || s->last_callback != 0x4444u) {
+        return fail("VPAD sampling callback invalid state");
+    }
+
+    /* GamePad rumble is accepted and discarded; invalid patterns are errors. */
+    for (i = 0; i < 4; i++) arena[0x500 + i] = (u8)(0x0fu & (i + 1u));
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 0u;
+    cpu.gpr[4] = 0x500u;
+    cpu.gpr[5] = 4u;
+    if (check_dispatch_r3("vpad.VPADControlMotor", &cpu, 0u) != 0) return 1;
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 0u;
+    cpu.gpr[4] = 0u;
+    cpu.gpr[5] = 0u;
+    if (check_dispatch_r3("vpad.VPADControlMotor", &cpu, 0u) != 0) return 1;
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 0u;
+    cpu.gpr[4] = 0u;
+    cpu.gpr[5] = 4u;
+    if (check_dispatch_r3("vpad.VPADControlMotor", &cpu, 0xffffffffu) != 0) return 1;
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 0u;
+    if (check_dispatch_void("vpad.VPADStopMotor", &cpu) != 0) return 1;
+    s = ppcx_hle_input_state();
+    if (s->vpad_motor_calls != 2u || s->vpad_motor_invalid != 1u || s->vpad_stop_motor_calls != 1u) {
+        return fail("VPAD motor state");
+    }
+
+    /* The five gyro configuration calls are counted and preserve the CPU. */
+    for (i = 0; i < sizeof(gyro_noops) / sizeof(gyro_noops[0]); i++) {
+        memset(&cpu, 0x5a, sizeof cpu);
+        cpu.gpr[3] = 0u;
+        cpu.gpr[4] = 2u;
+        if (check_dispatch_void(gyro_noops[i], &cpu) != 0) return 1;
+    }
+    s = ppcx_hle_input_state();
+    if (s->vpad_gyro_calls != 5u || s->last_gyro_chan != 0u || s->last_gyro_mode != 2u) {
+        return fail("VPAD gyro state");
+    }
+
+    /* WPAD has no controller and no Bluetooth sync backend. */
+    memset(arena + 0x510, 0xaa, 4);
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 0u;
+    cpu.gpr[4] = 0x510u;
+    if (check_dispatch_r3("padscore.WPADProbe", &cpu, 0xffffffffu) != 0) return 1;
+    if (ppcx_rd32(0x510u) != 0u) return fail("WPADProbe extension is not zero");
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 0u;
+    cpu.gpr[4] = 0u;
+    if (check_dispatch_r3("padscore.WPADProbe", &cpu, 0xffffffffu) != 0) return 1;
+    memset(&cpu, 0x5a, sizeof cpu);
+    if (check_dispatch_r3("padscore.WPADStartSyncDevice", &cpu, 0u) != 0) return 1;
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 1u;
+    if (check_dispatch_void("padscore.WPADEnableURCC", &cpu) != 0) return 1;
+    s = ppcx_hle_input_state();
+    if (s->wpad_probe_calls != 2u || s->wpad_sync_calls != 1u || s->wpad_urcc_calls != 1u) {
+        return fail("WPAD state");
+    }
+    if (s->last_probe_chan != 0u || s->last_probe_extension != 0u || s->last_urcc_enable != 1u) {
+        return fail("WPAD argument state");
+    }
+
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 0u;
+    if (check_dispatch_r3("vpadbase.VPADBASEGetHeadphoneStatus", &cpu, 0u) != 0) return 1;
+    s = ppcx_hle_input_state();
+    if (s->headphone_calls != 1u) return fail("headphone status count");
+
+    /* Reset must clear every input counter and callback slot. */
+    ppcx_hle_input_reset();
+    s = ppcx_hle_input_state();
+    if (s->kpad_initialized != 0u || s->kpad_read_calls != 0u || s->vpad_read_calls != 0u) {
+        return fail("input reset did not clear the state");
+    }
+    if (s->vpad_sampling_callbacks[0] != 0u || s->vpad_sampling_callbacks[1] != 0u) {
+        return fail("input reset did not clear callbacks");
+    }
+    return 0;
+}
+
 static int test_exact_names(void) {
     Cpu cpu;
     Cpu before;
@@ -347,6 +683,10 @@ static int test_exact_names(void) {
     if (ppcx_hle_dispatch_named(&cpu, "other.OSGetCoreId") != 0) return fail("incorrect module accepted");
     if (ppcx_hle_dispatch_named(&cpu, "coreinit.OSBlockMoveX") != 0) return fail("non-exact memory import accepted");
     if (ppcx_hle_dispatch_named(&cpu, "other.OSBlockMove") != 0) return fail("incorrect memory module accepted");
+    if (ppcx_hle_dispatch_named(&cpu, "padscore.KPADRead") != 0) return fail("unmodeled KPADRead accepted");
+    if (ppcx_hle_dispatch_named(&cpu, "vpad.VPADInit") != 0) return fail("unmodeled VPADInit accepted");
+    if (ppcx_hle_dispatch_named(&cpu, "vpad.VPADGetTPCalibratedPointEx") != 0) return fail("non-exact VPAD import accepted");
+    if (ppcx_hle_dispatch_named(&cpu, "padscore.WPADControlMotor") != 0) return fail("unmodeled WPAD audio/motor import accepted");
     if (ppcx_hle_dispatch_named(&cpu, NULL) != 0 || ppcx_hle_dispatch_named(NULL, "coreinit.OSGetCoreId") != 0) return fail("invalid args");
     return 0;
 }
@@ -361,7 +701,8 @@ int main(void) {
     if (test_dc_zero_range() != 0) return 1;
     if (test_cache_and_barrier() != 0) return 1;
     if (test_procui_lifecycle() != 0) return 1;
+    if (test_input_models() != 0) return 1;
     if (test_exact_names() != 0) return 1;
-    puts("hle: core identity, memory/cache and proc_ui lifecycle models, exact matching and register preservation OK");
+    puts("hle: core identity, memory/cache, proc_ui lifecycle and input models, exact matching and register preservation OK");
     return 0;
 }

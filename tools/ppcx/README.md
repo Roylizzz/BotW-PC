@@ -90,12 +90,23 @@ The pipeline runs against the real module (9,248,515 words of `.text`):
 
   `PPCX_HLE_TRACE=1` shows the modeled call. `ProcUIInit` is a void function,
   so `r3` still holds the save-callback argument by construction, not as a
-  documented return value. Eighteen exact-name calls are modeled (13
-  `coreinit` identity/memory/cache calls and the five `proc_ui` lifecycle
-  calls in `src/runtime/src/ppcx_hle.c`); this entry now completes with exit
-  code 0 under `PPCX_HLE_STRICT=1`. Strict rejection of an unmodeled call is
-  gated separately by the `tests/boot` scenario that calls
+  documented return value. Thirty-six exact-name calls are modeled (13
+  `coreinit` identity/memory/cache calls, the five `proc_ui` lifecycle calls
+  and 18 `padscore`/`vpad`/`vpadbase` input calls in
+  `src/runtime/src/ppcx_hle.c`); this entry now completes with exit code 0
+  under `PPCX_HLE_STRICT=1`. Strict rejection of an unmodeled call is gated
+  separately by the `tests/boot` scenario that calls
   `coreinit.OSSleepTicks` (exit code 5).
+
+  Two real v208 input wrappers were measured on 2026-10-20 with the same
+  image and strict mode. `0x030C7558` (13 instructions, only
+  `padscore.WPADProbe`) prints
+  `HLE modeled #1: padscore.WPADProbe (import 355), r3=0xFFFFFFFF` and
+  returns `r3 = 0` (no controller); `0x030D730C` (12 instructions, only
+  `vpadbase.VPADBASEGetHeadphoneStatus`) prints
+  `HLE modeled #1: vpadbase.VPADBASEGetHeadphoneStatus (import 438),
+  r3=0x00000000` and returns `r3 = 0`. Both exit 0. These are headless
+  placeholder semantics, not host input or controller emulation.
 
 Full notes, metrics and the remaining gaps towards a first GX2 frame are in
 `docs/research/2026-10-recompiler-prototype.md`.
@@ -265,9 +276,10 @@ scenario additionally gates the cross-range start fixpoint (pre-fixpoint
 analyzer → 14 failures, including the runtime exit 4 at `0x000100F0`).
 
 The native HLE contract test (`tests/hle/test_hle.c`, compiled with
-`cc -Wall -Wextra -Werror` in CI) covers the 18 modeled calls (13 coreinit
-identity/memory/cache and five proc_ui lifecycle models), exact-name matching,
-register preservation and the `OSBlockMove` overlap guarantee on a raw arena.
+`cc -Wall -Wextra -Werror` in CI) covers the 36 modeled calls (13 coreinit
+identity/memory/cache, five proc_ui lifecycle and 18 input models), exact-name
+matching, register preservation and the `OSBlockMove` overlap guarantee on a
+raw arena.
 
 All tests use only synthetic instruction sequences, synthetic import tables
 and synthetic RPX fixtures; no game data is required.

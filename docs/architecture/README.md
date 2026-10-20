@@ -26,3 +26,5 @@ Significant decisions are recorded as short ADRs in `decisions/`:
 - [0001 — Use architecture decision records](decisions/0001-use-adr.md)
 - [0002 — Port approach: options and evaluation criteria](decisions/0002-port-approach.md)
   (accepted on 2026-10-18)
+- [0003 — Headless input policy for the first runtime increment](decisions/0003-headless-input-policy.md)
+  (accepted on 2026-10-20)

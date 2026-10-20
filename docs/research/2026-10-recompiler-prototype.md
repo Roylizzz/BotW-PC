@@ -129,14 +129,24 @@ first GX2 frame?
 
    `PPCX_HLE_TRACE=1` logs the modeled call. `ProcUIInit` is void, so
    `r3 = 0x031FA4C8` is the save-callback argument left untouched by the
-   model, not a documented return value. Eighteen exact-name calls are
-   modeled (13 coreinit identity/memory/cache plus the five proc_ui
-   lifecycle calls), so this entry now completes with exit code 0 under
-   `PPCX_HLE_STRICT=1`; strict rejection is gated separately by the boot
+   model, not a documented return value. Thirty-six exact-name calls are
+   modeled (13 coreinit identity/memory/cache, the five proc_ui lifecycle
+   calls and 18 input calls), so this entry now completes with exit code 0
+   under `PPCX_HLE_STRICT=1`; strict rejection is gated separately by the boot
    fixture's unmodeled `coreinit.OSSleepTicks` call (exit 5). This exercises
    decode, relocation-driven HLE substitution, the tail-call convention, the
    dispatcher, the HLE name table and the TCC ABI in one shot — and confirms
    the boot-path note's reading of that method.
+
+   Two input wrappers now run the same way on v208 (2026-10-20):
+   `0x030C7558` (13 instructions, only `padscore.WPADProbe`) prints
+   `HLE modeled #1: padscore.WPADProbe (import 355), r3=0xFFFFFFFF`, returns
+   `r3 = 0` (no controller) and exits 0; `0x030D730C` (12 instructions, only
+   `vpadbase.VPADBASEGetHeadphoneStatus`) prints
+   `HLE modeled #1: vpadbase.VPADBASEGetHeadphoneStatus (import 438),
+   r3=0x00000000`, returns 0 and exits 0. Both use the same 31-segment /
+   43,155,811-byte image. These are placeholder input semantics, not host
+   input.
 
 7. **Runtime skeleton.** One flat arena of `0xC2000000` bytes covers every
    address the module is linked for (import slots sit at `0xC0000000`);
@@ -146,8 +156,8 @@ first GX2 frame?
    `~0x105DB1C0`); unsupported instructions and unregistered targets stop
    with an address + register dump. `PPCX_HLE_TRACE=1` logs every HLE call,
    `PPCX_HLE_STRICT=1` aborts on the first unimplemented one (exit code 5);
-   18 exact-name calls are modeled (13 coreinit identity/memory/cache and
-   five proc_ui lifecycle) and stay available.
+   36 exact-name calls are modeled (13 coreinit identity/memory/cache, five
+   proc_ui lifecycle and 18 input calls) and stay available.
 
 8. **Audit correction pass (2026-10-18).** An independent source audit fixed
    thirteen semantic defects in the runtime ABI, the decoder and the
@@ -375,11 +385,16 @@ first GX2 frame?
   non-NULL save callback, message pumps report `IN_FOREGROUND` while
   initialized and `EXITING` after shutdown, DrawDoneRelease is a counted
   no-op, and callback registrations are recorded (bounded at 16) but never
-  invoked because there is no HOME-menu integration. Remaining tier 1 work:
+  invoked because there is no HOME-menu integration. The eighteen input
+  calls landed 2026-10-20 under the headless policy in
+  [ADR-0003](../architecture/decisions/0003-headless-input-policy.md): one
+  neutral GamePad on VPAD channel 0, no KPAD/WPAD controller, identity touch
+  calibration, recorded-but-never-invoked sampling callbacks, discarded motor
+  patterns and counted gyro no-ops; the native contract test and two strict
+  v208 wrappers cover them (see item 6). Remaining tier 1 work:
   `OSGetSystemTime` / `OSGetTime` (491 sites, clock semantics still to
   define), TLS (`__tls_get_addr`, 3,371 sites) and the `_iob` /
-  `__gh_FOPEN_MAX` data slots; then padscore/input, filesystem and threading
-  models.
+  `__gh_FOPEN_MAX` data slots; then filesystem and threading models.
 - **GX2 bootstrap:** drive the documented chain (entry `0x03C70404` →
   `FUN_02c5e5f4` → … → `FUN_0309bbb0`, the only `GX2Init` site at
   `0x0309BC80`) with dispatch tracing, then model GX2 calls as

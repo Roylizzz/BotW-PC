@@ -107,6 +107,12 @@ not just a successful call; the native contract test additionally checks the
 recorded callback fields, the bounded table, reset/re-init and register
 preservation.
 
+The input models are deliberately not part of this synthetic fixture:
+`tests/hle` covers all 18 natively on a raw arena, and the real v208 wrappers
+at `0x030C7558` (`WPADProbe`) and `0x030D730C` (headphone status) cover the
+REL24 substitution and dispatcher path for the modeled services. Adding an
+input scenario here would duplicate that coverage without a new contract.
+
 ## Running
 
 ```sh

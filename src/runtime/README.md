@@ -133,8 +133,9 @@ built.
 
 ## Implemented HLE subset (synthetic tests)
 
-Eighteen original, exact-name functions are implemented in `ppcx_hle.c`:
-thirteen `coreinit` calls and five `proc_ui` lifecycle calls.
+Thirty-six original, exact-name functions are implemented in `ppcx_hle.c`:
+thirteen `coreinit` calls, five `proc_ui` lifecycle calls and eighteen
+`padscore`/`vpad`/`vpadbase` input calls.
 
 * **Core identity:** `OSGetCoreCount` (3), `OSGetCoreId` (1),
   `OSGetMainCoreId` (1), `OSIsMainCore` (true). The runtime's only guest CPU
@@ -160,17 +161,47 @@ thirteen `coreinit` calls and five `proc_ui` lifecycle calls.
   the `block = false` return as undefined; this model still reports the
   status so the behavior is deterministic. Signatures and status values were
   checked against devkitPro/wut `proc_ui/procui.h`.
+* **Input (headless placeholder):** the `padscore` calls `KPADGetMplsWorkSize`
+  (returns a model-chosen 0x100-byte work size), `KPADInitEx`,
+  `KPADSetMplsWorkarea` and `KPADReadEx`; `WPADProbe` (always
+  `WPAD_ERROR_NO_CONTROLLER`, writes extension type 0), `WPADStartSyncDevice`
+  (FALSE) and `WPADEnableURCC` (counted no-op); the `vpad` calls `VPADRead`,
+  `VPADGetTPCalibratedPoint`, `VPADSetSamplingCallback`, `VPADControlMotor`,
+  `VPADStopMotor`, `VPADEnableGyroAccRevise`,
+  `VPADDisableGyroDirRevise`, `VPADSetGyroAccReviseParam`,
+  `VPADSetGyroDirection` and `VPADSetGyroZeroDriftMode`; and
+  `vpadbase.VPADBASEGetHeadphoneStatus` (0, no headphones). One neutral
+  virtual GamePad is present on VPAD channel 0: a read with `count >= 1`
+  writes one zero-filled `VPADStatus` (0xAC bytes, no buttons, centered
+  sticks, invalid touch) and returns one sample. No KPAD/WPAD controller is
+  present, so `KPADReadEx` returns 0 samples with `KPAD_ERROR_NO_SAMPLES`
+  (-1) after init (or `KPAD_ERROR_UNINITIALIZED`, -5, before it; channels
+  outside 0..3 return `KPAD_ERROR_INVALID_CONTROLLER`, -2) and leaves the
+  guest buffer untouched. `VPADGetTPCalibratedPoint` performs an identity
+  copy of the 8-byte `VPADTouchData` (aliasing-safe), sampling callbacks are
+  recorded and never invoked, motor patterns are accepted and discarded, and
+  the gyro setters are counted no-ops. The policy is recorded in
+  [ADR-0003](../../docs/architecture/decisions/0003-headless-input-policy.md).
+  This is not host input or controller emulation; the sizes and signatures
+  were checked against wut `padscore/kpad.h`,
+  `padscore/wpad.h`, `vpad/input.h` and `vpadbase/base.h`.
 
 Values returned to the guest use r3 (PowerPC ABI); the `proc_ui` void
-functions leave r3 untouched. The memory services validate the whole range
-against the checked region map before touching memory, so a rejected operation
-has no partial effects and stops with the deterministic diagnostic and exit
-code 9. Zero-length ranges are no-ops and are never dereferenced.
+functions and the input void calls (`KPADInitEx`, `KPADSetMplsWorkarea`,
+`VPADGetTPCalibratedPoint`, `VPADStopMotor`, the five gyro setters and
+`WPADEnableURCC`) leave r3 untouched. The memory services validate the whole
+range against the checked region map before touching memory, so a rejected
+operation has no partial effects and stops with the deterministic diagnostic
+and exit code 9. Zero-length ranges are no-ops and are never dereferenced.
+`VPADRead` validates its 0xAC-byte destination and `VPADGetTPCalibratedPoint`
+validates its 8-byte source and destination before writing; `KPADReadEx`
+writes only the 4-byte error word because the model produces no KPAD sample.
 `OSBlockMove`'s documented overlap guarantee is implemented explicitly
 because the local TCC's `memmove` was measured to copy forward and corrupt an
 overlapping destination. Signatures and return contracts were checked against
-devkitPro/wut `coreinit/core.h`, `memory.h`, `cache.h` and
-`proc_ui/procui.h`.
+devkitPro/wut `coreinit/core.h`, `memory.h`, `cache.h`, `proc_ui/procui.h`,
+`padscore/kpad.h`, `padscore/wpad.h`, `vpad/input.h` and
+`vpadbase/base.h`.
 
 The v208 import census gives the measured priority: `OSBlockMove` 6,834
 REL24 call sites (+2 address-taken), `coreinit.memcpy` 408 (+2),
@@ -180,12 +211,27 @@ REL24 call sites (+2 address-taken), `coreinit.memcpy` 408 (+2),
 total (`ProcUIRegisterCallback` 6, the other four 1 each). The six callback
 registration sites use phases 5, 1, 0, 0, 1 and one caller-supplied value;
 the model stores the raw numbers and does not interpret or invoke them.
+The eighteen input imports cover 22 REL24 sites: the four KPAD calls 1 each;
+WPAD `Probe` 2, `EnableURCC` 1 and `StartSyncDevice` 1; VPAD `Read` 1,
+`GetTPCalibratedPoint` 3, `ControlMotor` 2, `SetSamplingCallback` 1,
+`StopMotor` 1 and the five gyro setters 1 each; `VPADBASEGetHeadphoneStatus`
+1. The Wii Remote audio/motor path remains unmodeled: `WENCGetEncodeData` 1,
+`WPADCanSendStreamData` 1, `WPADControlMotor` 2, `WPADControlSpeaker` 3 and
+`WPADSendStreamData` 1. Measured on v208 on 2026-10-20: the wrapper at
+`0x030C7558` calls `WPADProbe` with channel 0, prints
+`HLE modeled #1: padscore.WPADProbe (import 355), r3=0xFFFFFFFF`, returns
+`r3 = 0` (no controller) and exits 0 under `PPCX_HLE_STRICT=1`; the wrapper
+at `0x030D730C` calls `VPADBASEGetHeadphoneStatus`, prints
+`HLE modeled #1: vpadbase.VPADBASEGetHeadphoneStatus (import 438),
+r3=0x00000000`, returns 0 and also exits 0. Both runs use the 31-segment /
+43,155,811-byte image and 13/12 translated instructions respectively.
 
-All other imports remain unimplemented, including input, filesystem,
-threading and GX2. In diagnostic mode they are counted but still return as
-no-ops (not a valid game execution path). Set `PPCX_HLE_STRICT=1` to stop on
-such calls. Exact module-qualified lookup means similarly named symbols in
-other modules cannot accidentally be considered implemented.
+All other imports remain unimplemented, including filesystem, threading, GX2
+and the Wii Remote audio/motor path. In diagnostic mode they are counted but
+still return as no-ops (not a valid game execution path). Set
+`PPCX_HLE_STRICT=1` to stop on such calls. Exact module-qualified lookup means
+similarly named symbols in other modules cannot accidentally be considered
+implemented.
 
 Run the synthetic native tests without game content:
 
@@ -195,16 +241,17 @@ cc -std=c11 -Wall -Wextra -Werror -I src/runtime/include src/runtime/src/ppcx_hl
 ```
 
 The contract test runs on a raw host arena (`ppcx_mem_active` is 0, with a
-stubbed checker) and covers the 18 models, exact-name matching and register
-preservation, including the proc_ui lifecycle, callback table and re-init. The
+stubbed checker) and covers the 36 models, exact-name matching and register
+preservation, including the proc_ui lifecycle, callback table and re-init, and
+the input init/read, touch, callback, motor, gyro and WPAD contracts. The
 compiled `tests/mem` harness links the same `ppcx_hle.c` with the real
 `ppcx_mem.c` and region map: it checks the copy, fill and block semantics and
 runs four extra child processes in which a read-only destination, an unmapped
 destination, an unmapped source and a read-only `DCZeroRange` block must each
 exit with code 9 and the exact diagnostic. The workflow is manual-only; dispatch
 it from the Actions tab. It runs the HLE contract test, `tests/mem` and the
-compiled ISA/loader/boot harnesses. Do not count modeled identity, memory/cache
-or lifecycle calls as evidence of full Cafe OS compatibility.
+compiled ISA/loader/boot harnesses. Do not count modeled identity, memory/cache,
+lifecycle or input calls as evidence of full Cafe OS compatibility.
 
 ## Synthetic boot fixture
 
