@@ -90,9 +90,9 @@ The pipeline runs against the real module (9,248,515 words of `.text`):
 
   `PPCX_HLE_TRACE=1` shows the modeled call. `ProcUIInit` is a void function,
   so `r3` still holds the save-callback argument by construction, not as a
-  documented return value. Thirty-six exact-name calls are modeled (13
-  `coreinit` identity/memory/cache calls, the five `proc_ui` lifecycle calls
-  and 18 `padscore`/`vpad`/`vpadbase` input calls in
+  documented return value. Forty exact-name calls are modeled (17
+  `coreinit` identity/memory/cache/clock calls, the five `proc_ui` lifecycle
+  calls and 18 `padscore`/`vpad`/`vpadbase` input calls in
   `src/runtime/src/ppcx_hle.c`); this entry now completes with exit code 0
   under `PPCX_HLE_STRICT=1`. Strict rejection of an unmodeled call is gated
   separately by the `tests/boot` scenario that calls
@@ -107,6 +107,18 @@ The pipeline runs against the real module (9,248,515 words of `.text`):
   `HLE modeled #1: vpadbase.VPADBASEGetHeadphoneStatus (import 438),
   r3=0x00000000` and returns `r3 = 0`. Both exit 0. These are headless
   placeholder semantics, not host input or controller emulation.
+
+  Two real v208 clock paths were measured on 2026-10-20:
+  `0x030CB524` (11 instructions, only `coreinit.OSGetSystemInfo`) prints
+  `HLE modeled #1: coreinit.OSGetSystemInfo (import 78), r3=0x00090000` and
+  exits 0 under `PPCX_HLE_STRICT=1`; its disassembly computes
+  `busClockSpeed / 4 = 62,156,250` in r4 (the runtime trace reports r3 only,
+  so the 64-bit result is not printed). `0x0308E41C` (16 instructions, only
+  `coreinit.OSGetSystemTime`) prints `HLE modeled #1:
+  coreinit.OSGetSystemTime (import 79), r3=0x00000000` (high word; the first
+  low word is `0x000FCEA1`), stores both words at
+  `0x105495A0/A4`, zeroes `0x105495A8/AC` and exits 0. The 64-bit returns and
+  calendar fields are gated natively in `tests/hle`.
 
 Full notes, metrics and the remaining gaps towards a first GX2 frame are in
 `docs/research/2026-10-recompiler-prototype.md`.
@@ -242,9 +254,10 @@ boundary/unaligned/host accesses, thirteen illegal accesses (nine outside
 every region and four writes to a read-only one) each failing in its own
 process with exit code 9 and an exact diagnostic, the fault hook and
 run-to-run determinism. The HLE part checks the memory/cache models under
-the same map (25 positive lines: `OSBlockMove` non-overlapping and
+the same map (31 positive lines: `OSBlockMove` non-overlapping and
 overlapping, `OSBlockSet`, `memcpy`, `memset`, block-granular
-`DCZeroRange`, cache/barrier no-ops, read-only source) and four HLE fault
+`DCZeroRange`, cache/barrier no-ops, the mapped `OSGetSystemInfo`
+system-info record, read-only source) and four HLE fault
 processes (read-only destination, unmapped destination, unmapped source,
 read-only `DCZeroRange` block) (`node tests/mem/run.js` → `mem: OK`; the
 job runs in CI).
@@ -276,10 +289,11 @@ scenario additionally gates the cross-range start fixpoint (pre-fixpoint
 analyzer → 14 failures, including the runtime exit 4 at `0x000100F0`).
 
 The native HLE contract test (`tests/hle/test_hle.c`, compiled with
-`cc -Wall -Wextra -Werror` in CI) covers the 36 modeled calls (13 coreinit
-identity/memory/cache, five proc_ui lifecycle and 18 input models), exact-name
-matching, register preservation and the `OSBlockMove` overlap guarantee on a
-raw arena.
+`cc -Wall -Wextra -Werror` in CI) covers the 40 modeled calls (17 coreinit
+identity/memory/cache/clock, five proc_ui lifecycle and 18 input models),
+exact-name matching, register preservation, the 64-bit `r3:r4` clock returns,
+the 0x20-byte system-info and 0x28-byte calendar layouts and the
+`OSBlockMove` overlap guarantee on a raw arena.
 
 All tests use only synthetic instruction sequences, synthetic import tables
 and synthetic RPX fixtures; no game data is required.

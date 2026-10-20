@@ -3,10 +3,11 @@
  *
  * What this iteration does:
  *   - allocates one flat arena covering the whole guest address space;
- *   - models guest memory as a region map (ppcx_mem.c): the stack plus
- *     every loaded image segment; once installed (ppcx_run), any access
- *     outside every region stops with a diagnostic and exit code 9
- *     instead of silently reading or writing unrelated arena bytes;
+ *   - models guest memory as a region map (ppcx_mem.c): the stack, the
+ *     reserved HLE data page and every loaded image segment; once installed
+ *     (ppcx_run), any access outside every region stops with a diagnostic and
+ *     exit code 9 instead of silently reading or writing unrelated arena
+ *     bytes;
  *   - resolves guest addresses to translated functions by binary search
  *     over the generated registry;
  *   - gives address-taken imports stable pseudo-addresses in a reserved
@@ -16,8 +17,8 @@
  *     has no translation, a target with no registered function, or a guest
  *     trap instruction (tw).
  *
- * A minimal coreinit identity HLE registry is modeled (ppcx_hle.c); other
- * imports are counted and left untouched in diagnostic mode, and strict
+ * A typed coreinit/proc_ui/clock/input HLE registry is modeled (ppcx_hle.c);
+ * other imports are counted and left untouched in diagnostic mode, and strict
  * mode rejects them. `PPCX_HLE_TRACE=1` logs each call and
  * `PPCX_HLE_STRICT=1` aborts on the first unimplemented one.
  * `PPCX_DISPATCH_TRACE=1` logs every control transfer that goes through the
@@ -287,6 +288,7 @@ int ppcx_run(void) {
     const char *image;
     ppcx_runtime_init();
     ppcx_hle_procui_reset();
+    ppcx_hle_clock_reset();
     ppcx_hle_input_reset();
     memset(&cpu, 0, sizeof(cpu));
     /*
@@ -299,6 +301,18 @@ int ppcx_run(void) {
     g_fault_cpu = &cpu;
     ppcx_mem_set_fault_hook(ppcx_mem_fault_dump);
     ppcx_mem_reset(PPCX_INITIAL_STACK, PPCX_STACK_BYTES);
+    /*
+     * Reserve the one guest page that backs HLE data returned to the game
+     * (currently the OSSystemInfo record). It sits below the loaded image and
+     * the stack; a module that maps that address is rejected instead of
+     * silently aliasing it.
+     */
+    if (ppcx_mem_add_perm(PPCX_HLE_DATA_ADDR, PPCX_HLE_DATA_SIZE, "hle-data",
+                          PPCX_MEM_WRITE) != 0) {
+        fprintf(stderr, "ppcx: cannot map the HLE data page at 0x%08X\n",
+                (unsigned)PPCX_HLE_DATA_ADDR);
+        return 8;
+    }
     /*
      * Optional RPX load image (build/ppcx/image.bin, written by
      * `tools/ppcx image`): maps .rodata/.data/.bss so translated code can

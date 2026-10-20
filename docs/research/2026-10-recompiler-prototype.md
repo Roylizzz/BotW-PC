@@ -129,9 +129,9 @@ first GX2 frame?
 
    `PPCX_HLE_TRACE=1` logs the modeled call. `ProcUIInit` is void, so
    `r3 = 0x031FA4C8` is the save-callback argument left untouched by the
-   model, not a documented return value. Thirty-six exact-name calls are
-   modeled (13 coreinit identity/memory/cache, the five proc_ui lifecycle
-   calls and 18 input calls), so this entry now completes with exit code 0
+   model, not a documented return value. Forty exact-name calls are
+   modeled (17 coreinit identity/memory/cache/clock, the five proc_ui
+   lifecycle calls and 18 input calls), so this entry now completes with exit code 0
    under `PPCX_HLE_STRICT=1`; strict rejection is gated separately by the boot
    fixture's unmodeled `coreinit.OSSleepTicks` call (exit 5). This exercises
    decode, relocation-driven HLE substitution, the tail-call convention, the
@@ -148,6 +148,33 @@ first GX2 frame?
    43,155,811-byte image. These are placeholder input semantics, not host
    input.
 
+   The clock block landed on 2026-10-20 with four models covering 510 REL24
+   sites plus 2 address-taken sites: `OSGetSystemTime` (481 + 2),
+   `OSGetTime` (10), `OSGetSystemInfo` (17) and `OSTicksToCalendarTime` (2).
+   Calls appear in 374 functions, and 10 functions combine
+   `OSGetSystemInfo` with another clock call. The model is a deterministic
+   virtual clock, not host wall time: the machine boots at 2026-01-01
+   00:00:00 (9497 days after 2000-01-01), each successful `OSGetSystemTime`
+   or `OSGetTime` read advances one 60 Hz frame (1,035,937 timer ticks), and
+   `OSGetTime` adds the epoch. `OSGetSystemInfo` returns a pointer to the
+   0x20-byte `OSSystemInfo` at the reserved HLE data page `0x00090000`
+   (`busClockSpeed` 248,625,000, `coreClockSpeed` 1,243,125,000,
+   `baseTime` = epoch, zero reserved bytes). `OSTicksToCalendarTime` writes
+   the ten 0x28-byte `OSCalendarTime` fields in UTC and clamps negative
+   inputs to 2000-01-01; `OSSleepTicks` (7 sites) remains unmodeled because
+   it needs a scheduler. `tests/hle` now covers 40 models, including the
+   64-bit `r3:r4` returns, the system-info and calendar layouts and reset;
+   `tests/mem` verifies the record through the real region map (31 positive
+   HLE lines). Two real v208 paths run under strict mode with the same
+   image: `0x030CB524` (11 instructions, only `OSGetSystemInfo`) prints
+   `r3=0x00090000` and exits 0; its disassembly computes
+   `busClockSpeed / 4 = 62,156,250` in r4 after zeroing r3, so the result is
+   a 64-bit pair (the runtime trace prints r3 only). `0x0308E41C` (16
+   instructions, only `OSGetSystemTime`) prints `r3=0x00000000` (high word;
+   first low word `0x000FCEA1`), stores r3/r4 at `0x105495A0/A4`, zeroes
+   `0x105495A8/AC`, and exits 0. The clock policy is recorded in
+   [ADR-0004](../architecture/decisions/0004-deterministic-virtual-clock.md).
+
 7. **Runtime skeleton.** One flat arena of `0xC2000000` bytes covers every
    address the module is linked for (import slots sit at `0xC0000000`);
    dispatch is a binary search over the generated registry; address-taken
@@ -156,8 +183,8 @@ first GX2 frame?
    `~0x105DB1C0`); unsupported instructions and unregistered targets stop
    with an address + register dump. `PPCX_HLE_TRACE=1` logs every HLE call,
    `PPCX_HLE_STRICT=1` aborts on the first unimplemented one (exit code 5);
-   36 exact-name calls are modeled (13 coreinit identity/memory/cache, five
-   proc_ui lifecycle and 18 input calls) and stay available.
+   40 exact-name calls are modeled (17 coreinit identity/memory/cache/clock,
+   five proc_ui lifecycle and 18 input calls) and stay available.
 
 8. **Audit correction pass (2026-10-18).** An independent source audit fixed
    thirteen semantic defects in the runtime ABI, the decoder and the
@@ -391,9 +418,12 @@ first GX2 frame?
   neutral GamePad on VPAD channel 0, no KPAD/WPAD controller, identity touch
   calibration, recorded-but-never-invoked sampling callbacks, discarded motor
   patterns and counted gyro no-ops; the native contract test and two strict
-  v208 wrappers cover them (see item 6). Remaining tier 1 work:
-  `OSGetSystemTime` / `OSGetTime` (491 sites, clock semantics still to
-  define), TLS (`__tls_get_addr`, 3,371 sites) and the `_iob` /
+  v208 wrappers cover them (see item 6). The four deterministic
+  clock/system-info calls landed 2026-10-20 under
+  [ADR-0004](../architecture/decisions/0004-deterministic-virtual-clock.md)
+  (510 REL24 + 2 address-taken sites; see item 6), leaving `OSSleepTicks` and
+  the scheduler for later. Remaining tier 1 work:
+  TLS (`__tls_get_addr`, 3,371 sites) and the `_iob` /
   `__gh_FOPEN_MAX` data slots; then filesystem and threading models.
 - **GX2 bootstrap:** drive the documented chain (entry `0x03C70404` →
   `FUN_02c5e5f4` → … → `FUN_0309bbb0`, the only `GX2Init` site at

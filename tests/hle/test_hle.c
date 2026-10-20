@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 
-static u8 arena[0x1000];
+static u8 arena[0x00100000];
 u8 *ppcx_memory;
 int ppcx_mem_active = 0;
 
@@ -337,20 +337,185 @@ static int test_procui_lifecycle(void) {
 
 static int check_dispatch_r3(const char *name, Cpu *cpu, u32 expected) {
     Cpu before = *cpu;
-    if (ppcx_hle_dispatch_named(cpu, name) != 1) return fail("input import unresolved");
+    if (ppcx_hle_dispatch_named(cpu, name) != 1) return fail("HLE import unresolved");
     if (cpu->gpr[3] != expected) {
         fprintf(stderr, "hle: %s returned 0x%08x, expected 0x%08x\n", name, cpu->gpr[3], expected);
         return 1;
     }
     before.gpr[3] = expected;
-    if (memcmp(cpu, &before, sizeof *cpu) != 0) return fail("input import changed unexpected registers");
+    if (memcmp(cpu, &before, sizeof *cpu) != 0) return fail("HLE import changed unexpected registers");
+    return 0;
+}
+
+static int check_dispatch_u64(const char *name, Cpu *cpu, u64 expected) {
+    Cpu before = *cpu;
+    u32 hi = (u32)(expected >> 32);
+    u32 lo = (u32)expected;
+    if (ppcx_hle_dispatch_named(cpu, name) != 1) return fail("64-bit HLE import unresolved");
+    if (cpu->gpr[3] != hi || cpu->gpr[4] != lo) {
+        fprintf(stderr, "hle: %s returned 0x%08x%08x, expected 0x%08x%08x\n", name,
+                (unsigned)cpu->gpr[3], (unsigned)cpu->gpr[4], (unsigned)hi, (unsigned)lo);
+        return 1;
+    }
+    before.gpr[3] = hi;
+    before.gpr[4] = lo;
+    if (memcmp(cpu, &before, sizeof *cpu) != 0) return fail("64-bit HLE import changed unexpected registers");
     return 0;
 }
 
 static int check_dispatch_void(const char *name, Cpu *cpu) {
     Cpu before = *cpu;
-    if (ppcx_hle_dispatch_named(cpu, name) != 1) return fail("void input import unresolved");
-    if (memcmp(cpu, &before, sizeof *cpu) != 0) return fail("void input import changed registers");
+    if (ppcx_hle_dispatch_named(cpu, name) != 1) return fail("void HLE import unresolved");
+    if (memcmp(cpu, &before, sizeof *cpu) != 0) return fail("void HLE import changed registers");
+    return 0;
+}
+
+static int check_calendar_fields(u32 ea, u32 sec, u32 min, u32 hour, u32 mday,
+                                 u32 mon, u32 year, u32 wday, u32 yday,
+                                 u32 msec, u32 usec, const char *what) {
+    static const char *const names[10] = {
+        "tm_sec", "tm_min", "tm_hour", "tm_mday", "tm_mon",
+        "tm_year", "tm_wday", "tm_yday", "tm_msec", "tm_usec"
+    };
+    const u32 want[10] = { sec, min, hour, mday, mon, year, wday, yday, msec, usec };
+    unsigned i;
+    for (i = 0; i < 10; i++) {
+        u32 got = ppcx_rd32(ea + i * 4u);
+        if (got != want[i]) {
+            fprintf(stderr, "hle: %s %s = %u, expected %u\n", what, names[i], (unsigned)got,
+                    (unsigned)want[i]);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int test_clock_models(void) {
+    Cpu cpu;
+    const PpcxClockState *s;
+    const u64 epoch = PPCX_CLOCK_EPOCH_TICKS;
+    const u64 step = (u64)PPCX_CLOCK_STEP_TICKS;
+    const u32 out = PPCX_HLE_DATA_ADDR + 0x100u;
+    u64 t;
+    unsigned i;
+
+    ppcx_hle_clock_reset();
+    s = ppcx_hle_clock_state();
+    if (s->system_ticks != 0u || s->system_time_calls != 0u || s->time_calls != 0u) {
+        return fail("clock reset state");
+    }
+    if (s->system_info.bus_clock_speed != PPCX_CLOCK_BUS_HZ) return fail("clock reset bus speed");
+    if (s->system_info.core_clock_speed != PPCX_CLOCK_CORE_HZ) return fail("clock reset core speed");
+    if (s->system_info.base_time != epoch) return fail("clock reset base time");
+
+    /* OSGetSystemTime returns a 64-bit tick count in r3:r4 and advances the
+     * virtual timebase by one 60 Hz frame per read. */
+    memset(&cpu, 0x5a, sizeof cpu);
+    if (check_dispatch_u64("coreinit.OSGetSystemTime", &cpu, step) != 0) return 1;
+    s = ppcx_hle_clock_state();
+    if (s->system_time_calls != 1u || s->last_system_time != step || s->system_ticks != step) {
+        return fail("OSGetSystemTime first read state");
+    }
+    memset(&cpu, 0x5a, sizeof cpu);
+    if (check_dispatch_u64("coreinit.OSGetSystemTime", &cpu, 2u * step) != 0) return 1;
+    s = ppcx_hle_clock_state();
+    if (s->system_time_calls != 2u || s->system_ticks != 2u * step) {
+        return fail("OSGetSystemTime second read state");
+    }
+
+    /* OSGetTime adds the virtual epoch, so its high word is non-zero; this
+     * catches a model that only writes r3. */
+    memset(&cpu, 0x5a, sizeof cpu);
+    if (check_dispatch_u64("coreinit.OSGetTime", &cpu, epoch + 3u * step) != 0) return 1;
+    s = ppcx_hle_clock_state();
+    if (s->time_calls != 1u || s->last_time != epoch + 3u * step || s->system_ticks != 3u * step) {
+        return fail("OSGetTime first read state");
+    }
+    memset(&cpu, 0x5a, sizeof cpu);
+    if (check_dispatch_u64("coreinit.OSGetTime", &cpu, epoch + 4u * step) != 0) return 1;
+    s = ppcx_hle_clock_state();
+    if (s->time_calls != 2u || s->system_ticks != 4u * step) {
+        return fail("OSGetTime second read state");
+    }
+
+    /* OSGetSystemInfo writes a 0x20-byte OSSystemInfo record at the reserved
+     * HLE data page and does not advance the clock. */
+    memset(arena + PPCX_HLE_DATA_ADDR, 0xaa, PPCX_SYSTEM_INFO_SIZE);
+    memset(&cpu, 0x5a, sizeof cpu);
+    if (check_dispatch_r3("coreinit.OSGetSystemInfo", &cpu, PPCX_SYSTEM_INFO_ADDR) != 0) return 1;
+    s = ppcx_hle_clock_state();
+    if (s->system_info_calls != 1u || s->system_ticks != 4u * step) {
+        return fail("OSGetSystemInfo state");
+    }
+    if (s->system_info.bus_clock_speed != PPCX_CLOCK_BUS_HZ) return fail("system info bus speed");
+    if (s->system_info.core_clock_speed != PPCX_CLOCK_CORE_HZ) return fail("system info core speed");
+    if (s->system_info.base_time != epoch) return fail("system info base time");
+    if (ppcx_rd32(PPCX_SYSTEM_INFO_ADDR + 0x00u) != PPCX_CLOCK_BUS_HZ) return fail("guest bus speed");
+    if (ppcx_rd32(PPCX_SYSTEM_INFO_ADDR + 0x04u) != PPCX_CLOCK_CORE_HZ) return fail("guest core speed");
+    if (ppcx_rd64(PPCX_SYSTEM_INFO_ADDR + 0x08u) != epoch) return fail("guest base time");
+    for (i = 0x10u; i < PPCX_SYSTEM_INFO_SIZE; i += 4u) {
+        if (ppcx_rd32(PPCX_SYSTEM_INFO_ADDR + i) != 0u) return fail("system info reserved bytes");
+    }
+    memset(&cpu, 0x5a, sizeof cpu);
+    if (check_dispatch_r3("coreinit.OSGetSystemInfo", &cpu, PPCX_SYSTEM_INFO_ADDR) != 0) return 1;
+    s = ppcx_hle_clock_state();
+    if (s->system_info_calls != 2u || s->system_ticks != 4u * step) {
+        return fail("OSGetSystemInfo repeat state");
+    }
+
+    /* OSTicksToCalendarTime consumes r3:r4 ticks and a pointer in r5. */
+    memset(arena + out, 0xaa, PPCX_CALENDAR_TIME_SIZE + 4u);
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = (u32)(epoch >> 32);
+    cpu.gpr[4] = (u32)epoch;
+    cpu.gpr[5] = out;
+    if (check_dispatch_void("coreinit.OSTicksToCalendarTime", &cpu) != 0) return 1;
+    if (check_calendar_fields(out, 0u, 0u, 0u, 1u, 0u, 2026u, 4u, 0u, 0u, 0u, "epoch") != 0) {
+        return 1;
+    }
+    if (arena[out + PPCX_CALENDAR_TIME_SIZE] != 0xaau) {
+        return fail("OSTicksToCalendarTime wrote past OSCalendarTime");
+    }
+    s = ppcx_hle_clock_state();
+    if (s->calendar_calls != 1u || s->calendar_negative != 0u || s->last_calendar_ea != out ||
+        s->last_calendar_ticks != epoch || s->system_ticks != 4u * step) {
+        return fail("OSTicksToCalendarTime epoch state");
+    }
+
+    t = epoch + (u64)PPCX_CLOCK_TIMER_HZ + (u64)(PPCX_CLOCK_TIMER_HZ / 2u);
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = (u32)(t >> 32);
+    cpu.gpr[4] = (u32)t;
+    cpu.gpr[5] = out;
+    if (check_dispatch_void("coreinit.OSTicksToCalendarTime", &cpu) != 0) return 1;
+    if (check_calendar_fields(out, 1u, 0u, 0u, 1u, 0u, 2026u, 4u, 0u, 500u, 0u, "second") != 0) {
+        return 1;
+    }
+
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 0xffffffffu;
+    cpu.gpr[4] = 0xffffffffu;
+    cpu.gpr[5] = out;
+    if (check_dispatch_void("coreinit.OSTicksToCalendarTime", &cpu) != 0) return 1;
+    if (check_calendar_fields(out, 0u, 0u, 0u, 1u, 0u, 2000u, 6u, 0u, 0u, 0u, "negative") != 0) {
+        return 1;
+    }
+    s = ppcx_hle_clock_state();
+    if (s->calendar_calls != 3u || s->calendar_negative != 1u || s->last_calendar_ticks != 0u) {
+        return fail("OSTicksToCalendarTime negative state");
+    }
+
+    /* Reset must clear the counters and the timebase but keep the synthetic
+     * hardware description. */
+    ppcx_hle_clock_reset();
+    s = ppcx_hle_clock_state();
+    if (s->system_ticks != 0u || s->system_time_calls != 0u || s->time_calls != 0u ||
+        s->system_info_calls != 0u || s->calendar_calls != 0u || s->calendar_negative != 0u) {
+        return fail("clock reset did not clear state");
+    }
+    if (s->system_info.bus_clock_speed != PPCX_CLOCK_BUS_HZ) return fail("clock reset lost bus speed");
+    memset(&cpu, 0x5a, sizeof cpu);
+    if (check_dispatch_u64("coreinit.OSGetSystemTime", &cpu, step) != 0) return 1;
     return 0;
 }
 
@@ -683,6 +848,10 @@ static int test_exact_names(void) {
     if (ppcx_hle_dispatch_named(&cpu, "other.OSGetCoreId") != 0) return fail("incorrect module accepted");
     if (ppcx_hle_dispatch_named(&cpu, "coreinit.OSBlockMoveX") != 0) return fail("non-exact memory import accepted");
     if (ppcx_hle_dispatch_named(&cpu, "other.OSBlockMove") != 0) return fail("incorrect memory module accepted");
+    if (ppcx_hle_dispatch_named(&cpu, "coreinit.OSGetSystemTimeEx") != 0) return fail("non-exact clock import accepted");
+    if (ppcx_hle_dispatch_named(&cpu, "coreinit.OSGetSystemInfoEx") != 0) return fail("non-exact system-info import accepted");
+    if (ppcx_hle_dispatch_named(&cpu, "other.OSGetSystemTime") != 0) return fail("incorrect clock module accepted");
+    if (ppcx_hle_dispatch_named(&cpu, "coreinit.OSGetTick") != 0) return fail("unmodeled OSGetTick accepted");
     if (ppcx_hle_dispatch_named(&cpu, "padscore.KPADRead") != 0) return fail("unmodeled KPADRead accepted");
     if (ppcx_hle_dispatch_named(&cpu, "vpad.VPADInit") != 0) return fail("unmodeled VPADInit accepted");
     if (ppcx_hle_dispatch_named(&cpu, "vpad.VPADGetTPCalibratedPointEx") != 0) return fail("non-exact VPAD import accepted");
@@ -701,8 +870,9 @@ int main(void) {
     if (test_dc_zero_range() != 0) return 1;
     if (test_cache_and_barrier() != 0) return 1;
     if (test_procui_lifecycle() != 0) return 1;
+    if (test_clock_models() != 0) return 1;
     if (test_input_models() != 0) return 1;
     if (test_exact_names() != 0) return 1;
-    puts("hle: core identity, memory/cache, proc_ui lifecycle and input models, exact matching and register preservation OK");
+    puts("hle: core identity, memory/cache, proc_ui lifecycle, virtual clock/system info and input models, exact matching and register preservation OK");
     return 0;
 }

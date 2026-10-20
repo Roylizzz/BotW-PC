@@ -294,6 +294,20 @@ function buildHle() {
     line('printf("hle-ro-src=%d\\n", ppcx_hle_dispatch_named(&cpu, "coreinit.OSBlockMove"));', "hle-ro-src=1");
     line('printf("hle-ro-data=%08X\\n", (unsigned)ppcx_rd32(0x00012500u));', "hle-ro-data=00000000");
 
+    /* The clock's system-info record lives in the reserved HLE data page.
+     * Map that page for this mode and verify the guest-visible record. */
+    stmt('printf("hle-sysinfo-map=%d\\n", ppcx_mem_add_perm(0x00090000u, 0x00001000u, "hle-data", PPCX_MEM_WRITE));');
+    expected.push("hle-sysinfo-map=0");
+    stmt("memset(&cpu, 0, sizeof cpu);");
+    line('printf("hle-sysinfo=%d\\n", ppcx_hle_dispatch_named(&cpu, "coreinit.OSGetSystemInfo"));', "hle-sysinfo=1");
+    line('printf("hle-sysinfo-r3=%08X\\n", (unsigned)cpu.gpr[3]);', "hle-sysinfo-r3=00090000");
+    line('printf("hle-sysinfo-bus=%08X\\n", (unsigned)ppcx_rd32(0x00090000u));', "hle-sysinfo-bus=0ED1B768");
+    line('printf("hle-sysinfo-core=%08X\\n", (unsigned)ppcx_rd32(0x00090004u));', "hle-sysinfo-core=4A189508");
+    line(
+        'printf("hle-sysinfo-base=%08X%08X\\n", (unsigned)(ppcx_rd64(0x00090008u) >> 32), (unsigned)ppcx_rd64(0x00090008u));',
+        "hle-sysinfo-base=00B531CFBDFB8F00"
+    );
+
     line('printf("hle-unknown=%d\\n", ppcx_hle_dispatch_named(&cpu, "coreinit.OSBlockMoveX"));', "hle-unknown=0");
     return { code, expected };
 }

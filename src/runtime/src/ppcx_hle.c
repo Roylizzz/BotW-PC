@@ -3,10 +3,11 @@
  *
  * Models the core-identity calls used by this single-thread prototype (its
  * only guest context is pinned to Wii U main core 1), the guest-memory and
- * cache primitives whose contracts are purely mechanical, and the proc_ui
- * lifecycle, and the headless input services used by the input manager. It is
- * NOT a scheduler, a filesystem, a threading implementation, a HOME-menu
- * integration or a host input backend.
+ * cache primitives whose contracts are purely mechanical, the proc_ui
+ * lifecycle, the deterministic virtual clock/system-info services, and the
+ * headless input services used by the input manager. It is NOT a scheduler, a
+ * filesystem, a threading implementation, a HOME-menu integration or a host
+ * input backend.
  *
  * The flat arena has no data cache: guest-visible memory is always coherent,
  * so the cache-maintenance calls are typed no-ops that still validate their
@@ -15,7 +16,8 @@
  * preserved by DCZeroRange through ppcx_dcbz.
  *
  * API signatures, return values and overlap semantics checked against
- * devkitPro/wut coreinit/core.h, memory.h, cache.h and proc_ui/procui.h.
+ * devkitPro/wut coreinit/core.h, memory.h, cache.h, time.h, systeminfo.h and
+ * proc_ui/procui.h.
  */
 #include "ppcx_hle.h"
 
@@ -213,6 +215,166 @@ static void hle_procui_shutdown(Cpu *cpu) {
     g_procui.initialized = 0u;
     g_procui.shutdown = 1u;
     g_procui.status = PPCX_PROCUI_STATUS_EXITING;
+}
+
+/* ---- virtual clock and system info -----------------------------------
+ *
+ * Public signatures checked against wut coreinit/time.h and systeminfo.h.
+ * The model is deliberately deterministic and headless: there is no host
+ * wall-clock read and no timer interrupt. The virtual machine boots at a fixed
+ * epoch (2026-01-01, 9497 days after the OSTime epoch) and every successful
+ * OSGetSystemTime/OSGetTime read advances one virtual 60 Hz frame, so a
+ * polling loop makes progress while every run remains byte-identical.
+ *
+ * OSGetSystemInfo returns a pointer into the reserved HLE data page. The
+ * runtime maps that page before starting the entry; the 0x20-byte record
+ * reports the Wii U clock rates and the virtual boot time. OSGetTime returns
+ * ticks since 2000-01-01, so OSTicksToCalendarTime can produce a coherent
+ * calendar date. Negative inputs clamp to 2000-01-01.
+ */
+static PpcxClockState g_clock;
+
+const PpcxClockState *ppcx_hle_clock_state(void) {
+    return &g_clock;
+}
+
+void ppcx_hle_clock_reset(void) {
+    memset(&g_clock, 0, sizeof g_clock);
+    g_clock.system_info.bus_clock_speed = PPCX_CLOCK_BUS_HZ;
+    g_clock.system_info.core_clock_speed = PPCX_CLOCK_CORE_HZ;
+    g_clock.system_info.base_time = PPCX_CLOCK_EPOCH_TICKS;
+}
+
+static u64 hle_clock_advance(void) {
+    g_clock.system_ticks += (u64)PPCX_CLOCK_STEP_TICKS;
+    return g_clock.system_ticks;
+}
+
+static void hle_clock_return_u64(Cpu *cpu, u64 value) {
+    cpu->gpr[3] = (u32)(value >> 32);
+    cpu->gpr[4] = (u32)value;
+}
+
+static void hle_get_system_time(Cpu *cpu) {
+    u64 now = hle_clock_advance();
+    g_clock.system_time_calls++;
+    g_clock.last_system_time = now;
+    hle_clock_return_u64(cpu, now);
+}
+
+static void hle_get_time(Cpu *cpu) {
+    u64 now = PPCX_CLOCK_EPOCH_TICKS + hle_clock_advance();
+    g_clock.time_calls++;
+    g_clock.last_time = now;
+    hle_clock_return_u64(cpu, now);
+}
+
+static void hle_write_system_info(void) {
+    u32 ea = PPCX_SYSTEM_INFO_ADDR;
+    u32 off;
+
+    hle_check_range(ea, PPCX_SYSTEM_INFO_SIZE, 1);
+    ppcx_wr32(ea + 0x00u, PPCX_CLOCK_BUS_HZ);
+    ppcx_wr32(ea + 0x04u, PPCX_CLOCK_CORE_HZ);
+    ppcx_wr64(ea + 0x08u, PPCX_CLOCK_EPOCH_TICKS);
+    for (off = 0x10u; off < PPCX_SYSTEM_INFO_SIZE; off += 4u) {
+        ppcx_wr32(ea + off, 0u);
+    }
+}
+
+static void hle_get_system_info(Cpu *cpu) {
+    g_clock.system_info_calls++;
+    g_clock.system_info.bus_clock_speed = PPCX_CLOCK_BUS_HZ;
+    g_clock.system_info.core_clock_speed = PPCX_CLOCK_CORE_HZ;
+    g_clock.system_info.base_time = PPCX_CLOCK_EPOCH_TICKS;
+    hle_write_system_info();
+    cpu->gpr[3] = PPCX_SYSTEM_INFO_ADDR;
+}
+
+static int hle_is_leap_year(u32 year) {
+    return (year % 4u == 0u && year % 100u != 0u) || year % 400u == 0u;
+}
+
+static void hle_ticks_to_calendar(Cpu *cpu) {
+    static const u32 month_days[12] = {
+        31u, 28u, 31u, 30u, 31u, 30u, 31u, 31u, 30u, 31u, 30u, 31u
+    };
+    u64 raw = ((u64)cpu->gpr[3] << 32) | (u64)cpu->gpr[4];
+    int negative = (int)(raw >> 63);
+    u64 ticks;
+    u64 seconds;
+    u64 micros;
+    u64 total_days;
+    u64 remaining;
+    u32 out_ea = cpu->gpr[5];
+    u32 year = 2000u;
+    u32 mon = 0u;
+    u32 day_of_year;
+    u32 wday;
+    u32 sod;
+    u32 hour;
+    u32 minute;
+    u32 second;
+    u32 msec;
+    u32 usec;
+    u32 fields[10];
+    u32 i;
+
+    g_clock.calendar_calls++;
+    g_clock.last_calendar_ea = out_ea;
+    hle_check_range(out_ea, PPCX_CALENDAR_TIME_SIZE, 1);
+
+    if (negative) {
+        g_clock.calendar_negative++;
+        ticks = 0u;
+    } else {
+        ticks = raw;
+    }
+    g_clock.last_calendar_ticks = ticks;
+
+    seconds = ticks / (u64)PPCX_CLOCK_TIMER_HZ;
+    micros = ((ticks % (u64)PPCX_CLOCK_TIMER_HZ) * 1000000ull) /
+             (u64)PPCX_CLOCK_TIMER_HZ;
+    total_days = seconds / 86400ull;
+    sod = (u32)(seconds % 86400ull);
+
+    remaining = total_days;
+    for (;;) {
+        u32 days_in_year = hle_is_leap_year(year) ? 366u : 365u;
+        if (remaining < (u64)days_in_year) break;
+        remaining -= (u64)days_in_year;
+        year++;
+    }
+
+    day_of_year = (u32)remaining;
+    for (;;) {
+        u32 days_in_month = month_days[mon];
+        if (mon == 1u && hle_is_leap_year(year)) days_in_month++;
+        if (remaining < (u64)days_in_month || mon == 11u) break;
+        remaining -= (u64)days_in_month;
+        mon++;
+    }
+
+    wday = (u32)((total_days + 6ull) % 7ull); /* 2000-01-01 was Saturday */
+    hour = sod / 3600u;
+    minute = (sod % 3600u) / 60u;
+    second = sod % 60u;
+    msec = (u32)(micros / 1000ull);
+    usec = (u32)(micros % 1000ull);
+
+    fields[0] = second;
+    fields[1] = minute;
+    fields[2] = hour;
+    fields[3] = (u32)remaining + 1u;
+    fields[4] = mon;
+    fields[5] = year;
+    fields[6] = wday;
+    fields[7] = day_of_year;
+    fields[8] = msec;
+    fields[9] = usec;
+    for (i = 0u; i < 10u; i++) {
+        ppcx_wr32(out_ea + i * 4u, fields[i]);
+    }
 }
 
 /* ---- input ------------------------------------------------------------
@@ -446,6 +608,10 @@ static const PpcxHleEntry hle_registry[] = {
     { "coreinit.DCFlushRangeNoSync", hle_dc_flush_range_nosync },
     { "coreinit.DCInvalidateRange", hle_dc_invalidate_range },
     { "coreinit.OSMemoryBarrier", hle_memory_barrier },
+    { "coreinit.OSGetSystemTime", hle_get_system_time },
+    { "coreinit.OSGetTime", hle_get_time },
+    { "coreinit.OSGetSystemInfo", hle_get_system_info },
+    { "coreinit.OSTicksToCalendarTime", hle_ticks_to_calendar },
     { "proc_ui.ProcUIInit", hle_procui_init },
     { "proc_ui.ProcUIProcessMessages", hle_procui_process_messages },
     { "proc_ui.ProcUIDrawDoneRelease", hle_procui_draw_done_release },

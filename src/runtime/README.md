@@ -133,9 +133,10 @@ built.
 
 ## Implemented HLE subset (synthetic tests)
 
-Thirty-six original, exact-name functions are implemented in `ppcx_hle.c`:
-thirteen `coreinit` calls, five `proc_ui` lifecycle calls and eighteen
-`padscore`/`vpad`/`vpadbase` input calls.
+Forty original, exact-name functions are implemented in `ppcx_hle.c`:
+seventeen `coreinit` calls, five `proc_ui` lifecycle calls and eighteen
+`padscore`/`vpad`/`vpadbase` input calls. The four clock/system-info additions
+are the deterministic virtual clock described below.
 
 * **Core identity:** `OSGetCoreCount` (3), `OSGetCoreId` (1),
   `OSGetMainCoreId` (1), `OSIsMainCore` (true). The runtime's only guest CPU
@@ -161,6 +162,20 @@ thirteen `coreinit` calls, five `proc_ui` lifecycle calls and eighteen
   the `block = false` return as undefined; this model still reports the
   status so the behavior is deterministic. Signatures and status values were
   checked against devkitPro/wut `proc_ui/procui.h`.
+* **Clock and system info:** `OSGetSystemTime` and `OSGetTime` return a 64-bit
+  `OSTime` in `r3:r4`. They follow a deterministic virtual clock, not host
+  wall time: the machine boots at a fixed **2026-01-01 00:00:00** epoch (9497
+  days after the 2000-01-01 `OSTime` epoch), and every successful read advances
+  one virtual 60 Hz frame (`62,156,250 / 60 = 1,035,937` timer ticks).
+  `OSGetSystemTime` returns ticks since virtual boot; `OSGetTime` adds the
+  epoch. `OSGetSystemInfo` returns a pointer to a 0x20-byte `OSSystemInfo` at
+  the reserved HLE data page `0x00090000`: `busClockSpeed = 248,625,000`,
+  `coreClockSpeed = 1,243,125,000`, `baseTime` = the virtual epoch, and zero
+  reserved bytes. `OSTicksToCalendarTime` converts an `OSTime` since
+  2000-01-01 into the ten 32-bit `OSCalendarTime` fields (0x28 bytes, UTC,
+  Sunday = 0); negative inputs clamp to 2000-01-01. The clock model is a
+  placeholder for scheduling and timer-interrupt behavior; see
+  [ADR-0004](../../docs/architecture/decisions/0004-deterministic-virtual-clock.md).
 * **Input (headless placeholder):** the `padscore` calls `KPADGetMplsWorkSize`
   (returns a model-chosen 0x100-byte work size), `KPADInitEx`,
   `KPADSetMplsWorkarea` and `KPADReadEx`; `WPADProbe` (always
@@ -186,22 +201,25 @@ thirteen `coreinit` calls, five `proc_ui` lifecycle calls and eighteen
   were checked against wut `padscore/kpad.h`,
   `padscore/wpad.h`, `vpad/input.h` and `vpadbase/base.h`.
 
-Values returned to the guest use r3 (PowerPC ABI); the `proc_ui` void
-functions and the input void calls (`KPADInitEx`, `KPADSetMplsWorkarea`,
+Values returned to the guest use r3 (PowerPC ABI), except the two `OSTime`
+getters, which return the 64-bit value in `r3:r4`; `OSGetSystemInfo` returns
+its guest pointer in r3. The `proc_ui` void functions, `OSTicksToCalendarTime`
+and the input void calls (`KPADInitEx`, `KPADSetMplsWorkarea`,
 `VPADGetTPCalibratedPoint`, `VPADStopMotor`, the five gyro setters and
-`WPADEnableURCC`) leave r3 untouched. The memory services validate the whole
-range against the checked region map before touching memory, so a rejected
-operation has no partial effects and stops with the deterministic diagnostic
-and exit code 9. Zero-length ranges are no-ops and are never dereferenced.
+`WPADEnableURCC`) leave the general-purpose registers untouched. The memory
+services validate the whole range against the checked region map before
+touching memory, so a rejected operation has no partial effects and stops with
+the deterministic diagnostic and exit code 9. Zero-length ranges are no-ops
+and are never dereferenced.
 `VPADRead` validates its 0xAC-byte destination and `VPADGetTPCalibratedPoint`
 validates its 8-byte source and destination before writing; `KPADReadEx`
 writes only the 4-byte error word because the model produces no KPAD sample.
 `OSBlockMove`'s documented overlap guarantee is implemented explicitly
 because the local TCC's `memmove` was measured to copy forward and corrupt an
 overlapping destination. Signatures and return contracts were checked against
-devkitPro/wut `coreinit/core.h`, `memory.h`, `cache.h`, `proc_ui/procui.h`,
-`padscore/kpad.h`, `padscore/wpad.h`, `vpad/input.h` and
-`vpadbase/base.h`.
+devkitPro/wut `coreinit/core.h`, `memory.h`, `cache.h`, `time.h`,
+`systeminfo.h`, `proc_ui/procui.h`, `padscore/kpad.h`, `padscore/wpad.h`,
+`vpad/input.h` and `vpadbase/base.h`.
 
 The v208 import census gives the measured priority: `OSBlockMove` 6,834
 REL24 call sites (+2 address-taken), `coreinit.memcpy` 408 (+2),
@@ -211,6 +229,12 @@ REL24 call sites (+2 address-taken), `coreinit.memcpy` 408 (+2),
 total (`ProcUIRegisterCallback` 6, the other four 1 each). The six callback
 registration sites use phases 5, 1, 0, 0, 1 and one caller-supplied value;
 the model stores the raw numbers and does not interpret or invoke them.
+The four clock imports cover `OSGetSystemTime` 481 REL24 sites plus 2
+address-taken sites, `OSGetTime` 10, `OSGetSystemInfo` 17 and
+`OSTicksToCalendarTime` 2; `OSSleepTicks` (7 sites) stays unimplemented
+because it requires a scheduler. Ten functions combine `OSGetSystemInfo`
+with another clock call, so the system-info record and the virtual clock are
+tested together.
 The eighteen input imports cover 22 REL24 sites: the four KPAD calls 1 each;
 WPAD `Probe` 2, `EnableURCC` 1 and `StartSyncDevice` 1; VPAD `Read` 1,
 `GetTPCalibratedPoint` 3, `ControlMotor` 2, `SetSamplingCallback` 1,
@@ -225,6 +249,19 @@ at `0x030D730C` calls `VPADBASEGetHeadphoneStatus`, prints
 `HLE modeled #1: vpadbase.VPADBASEGetHeadphoneStatus (import 438),
 r3=0x00000000`, returns 0 and also exits 0. Both runs use the 31-segment /
 43,155,811-byte image and 13/12 translated instructions respectively.
+
+Two real v208 clock paths were measured on 2026-10-20 with the same image and
+`PPCX_HLE_STRICT=1`. The 11-instruction wrapper at `0x030CB524` calls
+`OSGetSystemInfo`, prints
+`HLE modeled #1: coreinit.OSGetSystemInfo (import 78), r3=0x00090000`, exits
+0, and its disassembly computes `busClockSpeed / 4 = 62,156,250` in r4 after
+zeroing r3 (a 64-bit `r3:r4` result; the runtime trace prints only r3). The
+16-instruction static initializer at `0x0308E41C` calls `OSGetSystemTime`,
+prints `HLE modeled #1: coreinit.OSGetSystemTime (import 79), r3=0x00000000`
+(the high word; the first low word is `0x000FCEA1`), stores both words at
+`0x105495A0/A4`, zeroes `0x105495A8/AC`, and exits 0. These runs prove the
+imports resolve and the HLE data page is readable under the real image; the
+64-bit values and calendar fields are gated by the native and memory tests.
 
 All other imports remain unimplemented, including filesystem, threading, GX2
 and the Wii Remote audio/motor path. In diagnostic mode they are counted but
@@ -241,11 +278,13 @@ cc -std=c11 -Wall -Wextra -Werror -I src/runtime/include src/runtime/src/ppcx_hl
 ```
 
 The contract test runs on a raw host arena (`ppcx_mem_active` is 0, with a
-stubbed checker) and covers the 36 models, exact-name matching and register
-preservation, including the proc_ui lifecycle, callback table and re-init, and
+stubbed checker) and covers the 40 models, exact-name matching and register
+preservation, including the 64-bit clock returns, the system-info and
+calendar layouts, the proc_ui lifecycle, callback table and re-init, and
 the input init/read, touch, callback, motor, gyro and WPAD contracts. The
 compiled `tests/mem` harness links the same `ppcx_hle.c` with the real
-`ppcx_mem.c` and region map: it checks the copy, fill and block semantics and
+`ppcx_mem.c` and region map: it checks the copy, fill and block semantics,
+the reserved HLE data page and the guest `OSSystemInfo` record, and
 runs four extra child processes in which a read-only destination, an unmapped
 destination, an unmapped source and a read-only `DCZeroRange` block must each
 exit with code 9 and the exact diagnostic. The workflow is manual-only; dispatch

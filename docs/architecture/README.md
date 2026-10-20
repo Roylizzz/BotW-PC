@@ -28,3 +28,5 @@ Significant decisions are recorded as short ADRs in `decisions/`:
   (accepted on 2026-10-18)
 - [0003 — Headless input policy for the first runtime increment](decisions/0003-headless-input-policy.md)
   (accepted on 2026-10-20)
+- [0004 — Deterministic virtual clock and system-info policy for headless runs](decisions/0004-deterministic-virtual-clock.md)
+  (accepted on 2026-10-20)

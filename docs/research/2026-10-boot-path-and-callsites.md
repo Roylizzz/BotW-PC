@@ -32,8 +32,11 @@ APIs?
    callers now have typed HLE models (`OSBlockMove`, `OSBlockSet`, `memcpy`,
    `memset`, `DCZeroRange`, the data-cache maintenance calls and
    `OSMemoryBarrier`; see the
-   [runtime README](../../src/runtime/README.md)); `__tls_get_addr`,
-   `OSGetSystemTime` and the remaining services are still open.
+   [runtime README](../../src/runtime/README.md)); `__tls_get_addr` remains
+   open. Follow-up (2026-10-20): `OSGetSystemTime`/`OSGetTime`,
+   `OSGetSystemInfo` and `OSTicksToCalendarTime` now use the deterministic
+   virtual clock in [ADR-0004](../architecture/decisions/0004-deterministic-virtual-clock.md);
+   `OSSleepTicks` (7 sites) and scheduler/timer interrupts remain open.
 
 2. **Startup chain (v208), refined after the import-name fix.**
    Following entry `0x03C70404` (`FUN_03c70404`) and the recovered call

@@ -49,6 +49,60 @@ typedef struct PpcxProcUiState {
 const PpcxProcUiState *ppcx_hle_procui_state(void);
 void ppcx_hle_procui_reset(void);
 
+/* Deterministic virtual clock and system-info model.
+ *
+ * This is not host wall time and not a timer interrupt. The virtual machine
+ * boots at the fixed epoch 2026-01-01 00:00:00 (9497 days after the OSTime
+ * epoch 2000-01-01). Every successful OSGetSystemTime/OSGetTime read advances
+ * the timebase by one virtual 60 Hz frame; polling loops therefore make
+ * progress while a run stays byte-identical from run to run. OSGetSystemTime
+ * returns ticks since that virtual boot and OSGetTime adds the epoch offset,
+ * so OSTicksToCalendarTime sees a coherent date.
+ *
+ * OSGetSystemInfo returns a 32-bit guest pointer to a 0x20-byte OSSystemInfo
+ * record placed in the reserved HLE data page below the guest image. The
+ * runtime maps that page with write permission; the record reports the Wii U
+ * bus/core clock rates and the virtual epoch as baseTime. OSTicksToCalendarTime
+ * converts ticks since 2000-01-01 into the ten big-endian 32-bit fields of
+ * OSCalendarTime (0x28 bytes); negative inputs clamp to the epoch. The 64-bit
+ * OSTime values use the PowerPC EABI register pair r3:r4.
+ */
+#define PPCX_CLOCK_BUS_HZ 248625000u
+#define PPCX_CLOCK_CORE_HZ 1243125000u
+#define PPCX_CLOCK_TIMER_HZ (PPCX_CLOCK_BUS_HZ / 4u)
+#define PPCX_CLOCK_EPOCH_DAYS 9497u /* 2000-01-01 -> 2026-01-01 */
+#define PPCX_CLOCK_EPOCH_TICKS \
+    ((u64)PPCX_CLOCK_EPOCH_DAYS * 86400u * (u64)PPCX_CLOCK_TIMER_HZ)
+#define PPCX_CLOCK_STEP_TICKS (PPCX_CLOCK_TIMER_HZ / 60u)
+#define PPCX_CALENDAR_TIME_SIZE 0x28u /* wut OSCalendarTime */
+#define PPCX_SYSTEM_INFO_SIZE 0x20u   /* wut OSSystemInfo */
+#define PPCX_HLE_DATA_ADDR 0x00090000u
+#define PPCX_HLE_DATA_SIZE 0x00001000u
+#define PPCX_SYSTEM_INFO_ADDR PPCX_HLE_DATA_ADDR
+
+typedef struct PpcxSystemInfo {
+    u32 bus_clock_speed;
+    u32 core_clock_speed;
+    u64 base_time;
+} PpcxSystemInfo;
+
+typedef struct PpcxClockState {
+    u64 system_ticks;
+    u64 last_system_time;
+    u64 last_time;
+    u64 last_calendar_ticks;
+    u32 system_time_calls;
+    u32 time_calls;
+    u32 system_info_calls;
+    u32 calendar_calls;
+    u32 calendar_negative;
+    u32 last_calendar_ea;
+    PpcxSystemInfo system_info;
+} PpcxClockState;
+
+const PpcxClockState *ppcx_hle_clock_state(void);
+void ppcx_hle_clock_reset(void);
+
 /* Input models (padscore KPAD/WPAD, vpad, vpadbase).
  *
  * This is a deterministic headless placeholder, not host input or controller
