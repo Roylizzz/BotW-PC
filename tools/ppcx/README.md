@@ -52,7 +52,7 @@ byte-identical output on the v208 demo).
 
 The pipeline runs against the real module (9,248,515 words of `.text`):
 
-* `analyze` finishes in ~2.3 s: 99.9994% of words decode to supported
+* `analyze` finishes in ~3 s: 99.9994% of words decode to supported
   instructions (9,248,462 of 9,248,515), none are known-but-unsupported and
   53 words are unknown/data — re-measured on 2026-10-19 after implementing
   `psq_l`/`psq_st`, the indexed forms and the external decode cross-check
@@ -61,11 +61,17 @@ The pipeline runs against the real module (9,248,515 words of `.text`):
   census of the same module has 97,363) plus 104,499 pointer-only starts
   taken from `.rodata`/`.data` code pointers (vtable/callback/constant-getter
   and static-init table entries that no branch scan can reach; the `.data`
-  half landed 2026-10-19, +473 starts). Cross-checked against the census
-  on 2026-10-19: 96,052 branch starts agree, both difference classes are
-  classified and sampled, and the census turns out to be a lower bound
-  (Ghidra has multi-kilobyte gaps that the linear scan covers; see item 11
-  of `docs/research/2026-10-recompiler-prototype.md`).
+  half landed 2026-10-19, +473 starts). Inline Metrowerks branch tables add
+  2,986 `tableStarts` from 177 tables (entries at `bctr + 4`, 7–82 words
+  each; 2,979 case targets had no other static edge). A cross-range fixpoint
+  seeded with all four classes then adds 3,275 tail starts so every in-text
+  `b`/`bc` target is either a start or inside its site's range (union:
+  **207,634 translation ranges**; 828,267 pairs re-checked, zero dispatch
+  gaps). Cross-checked against the census on 2026-10-19: 96,052 branch
+  starts agree, both difference classes are classified and sampled, and the
+  census turns out to be a lower bound (Ghidra has multi-kilobyte gaps that
+  the linear scan covers; see item 11 of
+  `docs/research/2026-10-recompiler-prototype.md`).
 * The imports map covers 445 slots: 16,682 REL24 sites (16,522 `bl` calls
   and 160 `b` tail calls) and 40 ADDR16 address-taken sites.
 * `image` builds the load image of the same module in ~1.5 s: 31 segments,
@@ -230,23 +236,30 @@ processes (read-only destination, unmapped destination, unmapped source,
 read-only `DCZeroRange` block) (`node tests/mem/run.js` → `mem: OK`; the
 job runs in CI).
 
-The synthetic boot harness (`tests/boot`) authors a game-free RPX (five
-functions, three imports, relocated `.rodata` pointers, two deferred TLS
-sites, `.data`/`.bss`), runs it through the real `analyze` →
-`translateModule` → `buildImage`/`serializeImage` path, compiles the
-generated unit with the real runtime, checked-memory model, image loader and
-HLE layer, and boots it headless in six scenarios: modeled calls through a
-direct `bl` and through an address-taken import's dispatcher trampoline
-(`PPCX_HLE_TRACE`/`PPCX_DISPATCH_TRACE` transcripts), an unmodeled import
-tolerated as a counted no-op, `PPCX_HLE_STRICT=1` (exit 5 + register dump), a
-pointer-only getter reached from `.rodata`, an unmapped read (exit 9) and the
-same boot without `PPCX_IMAGE` (exit 9 at the first data read). Every
-stderr/stdout line and every guest-memory probe is compared with
-fixture-authored expectations, and the boot run must repeat byte-identically
-(`node tests/boot/run.js` → `boot: 6 scenarios … boot: OK`). The fixture
-found two defects now gated there: address-taken imports missing from
-`ppcx_import_name` and an initial SP that left the loader's ABI frame outside
-the stack region.
+The synthetic boot harness (`tests/boot`) authors a game-free RPX (eight
+functions plus an inline three-entry `b`-table, three imports, relocated
+`.rodata` pointers, two deferred TLS sites, `.data`/`.bss`), runs it through
+the real `analyze` → `translateModule` → `buildImage`/`serializeImage` path,
+compiles the generated unit with the real runtime, checked-memory model,
+image loader and HLE layer, and boots it headless in eight scenarios: modeled
+calls through a direct `bl` and through an address-taken import's dispatcher
+trampoline (`PPCX_HLE_TRACE`/`PPCX_DISPATCH_TRACE` transcripts), an unmodeled
+import tolerated as a counted no-op, `PPCX_HLE_STRICT=1` (exit 5 + register
+dump), a pointer-only getter reached from `.rodata`, a cross-range tail `b`
+that runs the mid-body start the analysis fixpoint discovered
+(`PPCX_TAILCALL(c, f_000100F0)`, `r3 = 2` only if the jump skips `addi
+r3,0,0x40`), a computed `bctr` switch that dispatches to its inline table
+entry (`0x1013C`, `r3 = 0x11`), an unmapped read (exit 9) and the same boot
+without `PPCX_IMAGE` (exit 9 at the first data read). Every stderr/stdout line
+and every guest-memory probe is compared with fixture-authored expectations,
+and the boot run must repeat byte-identically (`node tests/boot/run.js` →
+`boot: 8 scenarios … boot: OK`). The fixture found three defects now gated
+there: address-taken imports missing from `ppcx_import_name`, an initial SP
+that left the loader's ABI frame outside the stack region, and canonical
+`blr`/`bctr` omitting `BO`/`BI` so the switch dispatch gate decremented CTR
+and shifted the target by one word; the tail scenario additionally gates the
+cross-range start fixpoint (pre-fixpoint analyzer → 14 failures, including
+the runtime exit 4 at `0x000100F0`).
 
 The native HLE contract test (`tests/hle/test_hle.c`, compiled with
 `cc -Wall -Wextra -Werror` in CI) covers the 13 modeled coreinit identity

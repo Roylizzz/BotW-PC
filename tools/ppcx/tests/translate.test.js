@@ -83,6 +83,29 @@ test("displacements beyond 16 MB reach the right target", () => {
     assert.match(r.code, /PPCX_DISPATCH\(c, 0x0314fe24u\);/);
 });
 
+test("a cross-range `b` to an emitted start becomes a tail call", () => {
+    // b 0x1100 out of [0x1000, 0x1008): the target must have its own body.
+    const r = translate([0x48000100, 0x4e800020], {
+        textEnd: 0x2000,
+        startSet: [0x1000, 0x1100],
+        emitSet: [0x1000, 0x1100],
+    });
+    assert.match(r.code, /PPCX_TAILCALL\(c, f_00001100\);/);
+    assert.deepEqual(r.warnings, []);
+    assert.deepEqual([...r.externalTargets], []);
+});
+
+test("a cross-range `b` to a start outside the unit dispatches at run time", () => {
+    const r = translate([0x48000100, 0x4e800020], {
+        textEnd: 0x2000,
+        startSet: [0x1000, 0x1100],
+        emitSet: [0x1000],
+    });
+    assert.match(r.code, /PPCX_DISPATCH\(c, 0x00001100u\);/);
+    assert.deepEqual(r.warnings, []);
+    assert.deepEqual([...r.externalTargets], [0x1100]);
+});
+
 test("substitutes address-taken imports (HA/LO pair)", () => {
     const dataSite = new Map([
         [0x2002, { index: 3, type: 6 }],
@@ -153,8 +176,11 @@ test("untranslated call targets dispatch at runtime", () => {
 });
 
 test("indirect tails through CTR dispatch and return", () => {
-    const r = translate([0x4e800420, 0x4e800020]); // bctr
-    assert.match(r.code, /\{\n\s+PPCX_DISPATCH\(c, c->ctr & ~3u\);\n\s+return;\n\s+\}/);
+    const r = translate([0x4e800420, 0x4e800020]); // bctr (bcctr 20, 0)
+    // Canonical bctr is unconditional: no ppcx_bc gate, so CTR is not
+    // decremented before the dispatch (that would retarget the jump).
+    assert.doesNotMatch(r.code, /ppcx_bc/);
+    assert.match(r.code, /\{\n {8}PPCX_DISPATCH\(c, c->ctr & ~3u\);\n {8}return;\n {4}\}/);
 });
 
 test("bctrl calls through CTR and keeps running", () => {

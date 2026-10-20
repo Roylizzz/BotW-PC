@@ -173,3 +173,58 @@ test("collects code pointers from .rela.rodata and .rela.data only when ADDR32",
     // unchanged by the pointer scan.
     assert.deepEqual(a.functionStarts, [0x1000, 0x100c, 0x2000]);
 });
+
+function buildTailFixture() {
+    const { buf, parsed } = buildFixture();
+    const put = (addr, word) => buf.writeUInt32BE(word >>> 0, addr - BASE + TEXT_OFFSET);
+    put(0x1004, 0x48000100); // b 0x1104: crosses the range, adds 0x1104
+    put(0x1100, 0x48000100); // b 0x1200: intra-range until 0x1104 splits it
+    put(0x1400, 0x48000100); // b 0x1500: intra-range, must stay out
+    return { buf, parsed };
+}
+
+test("adds cross-range tail targets to the start set to a fixpoint", () => {
+    const { buf, parsed } = buildTailFixture();
+    const a = analyzeRpx(buf, parsed);
+    // 0x1104 is a direct cross-range target; adding it splits the range and
+    // exposes 0x1200 as the second-order cross-range target. 0x1500 stays a
+    // plain intra-range goto.
+    assert.deepEqual(a.tailStarts, [0x1104, 0x1200]);
+    assert.equal(a.stats.tailStartsAdded, 2);
+    assert.ok(!a.tailStarts.includes(0x1500));
+    // Tail targets never re-classify branch starts or pointer starts.
+    assert.deepEqual(a.functionStarts, [0x1000, 0x100c, 0x2000]);
+    assert.deepEqual(a.pointerStarts, []);
+});
+
+function buildBranchTableFixture() {
+    const { buf, parsed } = buildFixture();
+    const put = (addr, word) => buf.writeUInt32BE(word >>> 0, addr - BASE + TEXT_OFFSET);
+    // 0x1000 stwu (function start, left from buildFixture)
+    put(0x1004, 0x3c000000); // addis r0, 0, 0
+    put(0x1008, 0x30001140); // addic r0, r0, 0x1140 (r0 is GPR0 here)
+    put(0x100c, 0x5463103a); // rlwinm r3, r3, 2, 0, 29
+    put(0x1010, 0x7c030214); // add r0, r3, r0
+    put(0x1014, 0x7c0903a6); // mtctr r0
+    put(0x1018, 0x4e800420); // bctr
+    // Inline table: three b entries, then the case bodies.
+    put(0x1140, 0x48000040); // b 0x1180
+    put(0x1144, 0x48000040); // b 0x1184
+    put(0x1148, 0x48000040); // b 0x1188
+    put(0x1180, 0x4e800020); // blr
+    put(0x1184, 0x4e800020); // blr
+    put(0x1188, 0x4e800020); // blr
+    return { buf, parsed };
+}
+
+test("promotes inline b-table switch entries and exposes their case labels", () => {
+    const { buf, parsed } = buildBranchTableFixture();
+    const a = analyzeRpx(buf, parsed);
+    assert.deepEqual(a.tableStarts, [0x1140, 0x1144, 0x1148]);
+    assert.equal(a.stats.tableStartsAdded, 3);
+    // Each entry's `b` leaves its own 4-byte range, so the fixpoint records
+    // the case bodies as tail starts in the same pass.
+    assert.deepEqual(a.tailStarts, [0x1180, 0x1184, 0x1188]);
+    assert.equal(a.stats.tailStartsAdded, 3);
+    assert.deepEqual(a.functionStarts, [0x1000]);
+});

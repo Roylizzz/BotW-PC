@@ -25,6 +25,8 @@
  *   - tolerant:  an unmodeled import is a counted diagnostic no-op;
  *   - strict:    the same call stops with exit 5 and the register dump;
  *   - pointer:   a function only reachable through a .rodata code pointer;
+ *   - tail:      a `b` that crosses into another range executes the mid-body
+ *                entry point that the cross-range fixpoint discovered;
  *   - fault:     a read outside every mapped region stops with exit 9;
  *   - no-image:  the same boot without PPCX_IMAGE faults at the first data
  *                read instead of silently reading zeroes.
@@ -84,7 +86,10 @@ function buildScenario() {
     const blob = serializeImage(plan);
 
     const e = f.expected;
-    const translatedFunctions = 5; /* boot, helper, strict, fault, pointer-only */
+    const translatedFunctions = 14; /* the six authored entries, the three
+                                      inline branch-table entries, the helper,
+                                      the tail target and the three switch
+                                      case bodies reached through the table */
     const imageLine =
         `ppcx: image <image> mapped: ${e.segments} segment(s), ${e.bytes} bytes (1 BSS)`;
     const entryLine = (addr) => `ppcx: entry 0x${hex8(addr)}, ${translatedFunctions} translated function(s)`;
@@ -166,6 +171,37 @@ function buildScenario() {
                 imageLine,
                 entryLine(e.entry.pointer),
                 "ppcx: entry returned, r3 = 0xAABBCCDD",
+                "ppcx: HLE calls: 0 (unimplemented services remain)",
+            ],
+            stdout: probesToStdout(initialProbes, 0, 0),
+        },
+        {
+            id: "tail",
+            entry: e.entry.tail,
+            env: { PPCX_DISPATCH_TRACE: "1" },
+            image: true,
+            status: 0,
+            stderr: [
+                imageLine,
+                entryLine(e.entry.tail),
+                `ppcx: dispatch 0x${hex8(e.entry.tail)}`,
+                "ppcx: entry returned, r3 = 0x00000002",
+                "ppcx: HLE calls: 0 (unimplemented services remain)",
+            ],
+            stdout: probesToStdout(initialProbes, 0, 0),
+        },
+        {
+            id: "switch",
+            entry: e.entry.switch,
+            env: { PPCX_DISPATCH_TRACE: "1" },
+            image: true,
+            status: 0,
+            stderr: [
+                imageLine,
+                entryLine(e.entry.switch),
+                `ppcx: dispatch 0x${hex8(e.entry.switch)}`,
+                `ppcx: dispatch 0x${hex8(e.tableStarts[0])}`,
+                "ppcx: entry returned, r3 = 0x00000011",
                 "ppcx: HLE calls: 0 (unimplemented services remain)",
             ],
             stdout: probesToStdout(initialProbes, 0, 0),
@@ -275,6 +311,18 @@ function runBoot(opts = {}) {
             detail: `expected ${JSON.stringify(f.expected.pointerStarts)}, got ${JSON.stringify(analysis.pointerStarts)}`,
         });
     }
+    if (JSON.stringify(analysis.tableStarts) !== JSON.stringify(f.expected.tableStarts)) {
+        failures.push({
+            id: "analysis.table-starts",
+            detail: `expected ${JSON.stringify(f.expected.tableStarts)}, got ${JSON.stringify(analysis.tableStarts)}`,
+        });
+    }
+    if (JSON.stringify(analysis.tailStarts) !== JSON.stringify(f.expected.tailStarts)) {
+        failures.push({
+            id: "analysis.tail-starts",
+            detail: `expected ${JSON.stringify(f.expected.tailStarts)}, got ${JSON.stringify(analysis.tailStarts)}`,
+        });
+    }
     if (analysis.coverage.unsupported !== 0 || analysis.coverage.unknown !== 0) {
         failures.push({
             id: "analysis.coverage",
@@ -317,6 +365,12 @@ function runBoot(opts = {}) {
         f.expected.entry.strict,
         f.expected.entry.fault,
         f.expected.entry.pointer,
+        f.expected.entry.tail,
+        f.expected.entry.switch,
+        /* The computed bctr target is invisible to the translator's static
+         * callee walk, so the harness emits the discovered table entries as
+         * explicit roots (same reason the pointer-only getter is a root). */
+        ...f.expected.tableStarts,
     ];
     const translationByEntry = new Map();
     for (const scenario of scenarios) {
@@ -327,10 +381,10 @@ function runBoot(opts = {}) {
         );
     }
     const reference = translationByEntry.get(f.expected.entry.boot);
-    if (reference.report.totals.functions !== 5) {
+    if (reference.report.totals.functions !== 14) {
         failures.push({
             id: "translate.functions",
-            detail: `expected 5 translated functions, got ${reference.report.totals.functions}`,
+            detail: `expected 14 translated functions, got ${reference.report.totals.functions}`,
         });
     }
     if (reference.report.totals.unsupportedInstructions !== 0 || reference.report.totals.warnings !== 0) {
@@ -339,10 +393,21 @@ function runBoot(opts = {}) {
             detail: `${reference.report.totals.unsupportedInstructions} unsupported, ${reference.report.totals.warnings} warnings`,
         });
     }
-    if (reference.report.totals.instructions !== 58) {
+    if (reference.report.totals.instructions !== 95) {
         failures.push({
             id: "translate.instructions",
-            detail: `expected 58 instructions, got ${reference.report.totals.instructions}`,
+            detail: `expected 95 instructions, got ${reference.report.totals.instructions}`,
+        });
+    }
+    const tailCall = `PPCX_TAILCALL(c, f_${hex8(f.expected.tailStarts[0])});`;
+    if (!reference.gen.includes(tailCall)) {
+        failures.push({ id: "translate.tail-target", detail: `gen.c does not contain ${tailCall}` });
+    }
+    const tableCall = `PPCX_TAILCALL(c, f_${hex8(f.expected.tailStarts[1])});`;
+    if (!reference.gen.includes(tableCall)) {
+        failures.push({
+            id: "translate.table-target",
+            detail: `gen.c does not contain ${tableCall} (the first table entry's case body)`,
         });
     }
     const wantHle = new Map([
