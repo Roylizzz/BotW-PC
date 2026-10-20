@@ -43,8 +43,14 @@ test("decodes stwu with a negative offset and the update flag", () => {
 });
 
 test("decodes blr and bctr", () => {
-    assert.equal(decode(0x4e800020).branch, "blr");
-    assert.equal(decode(0x4e800420).branch, "bctr");
+    const blr = decode(0x4e800020);
+    assert.equal(blr.branch, "blr");
+    assert.equal(blr.bo, 20); // bclr 20, 0
+    assert.equal(blr.bi, 0);
+    const bctr = decode(0x4e800420);
+    assert.equal(bctr.branch, "bctr");
+    assert.equal(bctr.bo, 20); // bcctr 20, 0: unconditional, CTR untouched
+    assert.equal(bctr.bi, 0);
 });
 
 test("bctrl carries the link bit", () => {

@@ -192,13 +192,14 @@ of full Cafe OS compatibility.
 `ppcx_hle.c` and `ppcx_image.c`), a generated translation unit and a small
 driver, then boots a game-free RPX from `tests/boot/fixture.js` headless. The
 fixture exercises the real pipeline end to end — analysis, translation, load
-image, checked memory and HLE — in seven scenarios: modeled calls through a
+image, checked memory and HLE — in eight scenarios: modeled calls through a
 direct `bl` and through an address-taken import's dispatcher trampoline (with
 `PPCX_HLE_TRACE`/`PPCX_DISPATCH_TRACE` checkpoints), an unmodeled import in
 diagnostic mode, `PPCX_HLE_STRICT=1` (exit 5 with the register dump), a
 pointer-only getter, a cross-range tail `b` that must run the mid-body start
-the analysis discovered (`r3 = 2` only if the jump skips `addi r3,0,0x40`),
-an unmapped read (exit 9) and the same boot without `PPCX_IMAGE` (exit 9 at
-the first data read). Every stderr/stdout line and every guest-memory probe
-is compared with the authored expectations, and the boot run must repeat
-byte-identically.
+the analysis discovered (`r3 = 2` only if the jump skips `addi r3,0,0x40`), a
+computed `bctr` inline-table switch that must dispatch through its `b` entry
+and return `r3 = 0x11`, an unmapped read (exit 9) and the same boot without
+`PPCX_IMAGE` (exit 9 at the first data read). Every stderr/stdout line and
+every guest-memory probe is compared with the authored expectations, and the
+boot run must repeat byte-identically.

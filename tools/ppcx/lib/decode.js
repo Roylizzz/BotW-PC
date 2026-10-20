@@ -330,8 +330,8 @@ function decode(word) {
     const base = { word: w, op };
 
     if (w === 0) return { ...base, name: "invalid-0", supported: false, invalid: true };
-    if (w === 0x4e800020) return { ...base, name: "blr", supported: true, branch: "blr" };
-    if (w === 0x4e800420) return { ...base, name: "bctr", supported: true, branch: "bctr" };
+    if (w === 0x4e800020) return { ...base, name: "blr", supported: true, branch: "blr", bo: 20, bi: 0 };
+    if (w === 0x4e800420) return { ...base, name: "bctr", supported: true, branch: "bctr", bo: 20, bi: 0 };
 
     // --- D-form ---
     if (D_FORM.has(op)) {

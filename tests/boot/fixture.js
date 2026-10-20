@@ -29,7 +29,7 @@
  */
 
 const TEXT_ADDR = 0x00010000;
-const TEXT_SIZE = 0x00000118;
+const TEXT_SIZE = 0x00000184;
 
 const SLOT_MEMCPY = 0x00020000;
 const SLOT_OSBLOCKMOVE = 0x00020008;
@@ -66,6 +66,7 @@ const ENTRY = {
     pointer: 0x000100d8,
     split: 0x000100e8,
     tail: 0x000100f8,
+    switch: 0x00010118,
 };
 
 /* Mid-body entry that only the cross-range `b` in `func_t` reaches. */
@@ -98,6 +99,23 @@ function assemble() {
         addis(rt, ra, imm) {
             return api.word(((15 << 26) | (rt << 21) | (ra << 16) | (imm & 0xffff)) >>> 0);
         },
+        addic(rt, ra, imm) {
+            return api.word(((12 << 26) | (rt << 21) | (ra << 16) | (imm & 0xffff)) >>> 0);
+        },
+        rlwinm(ra, rs, sh, mb, me) {
+            return api.word(
+                ((21 << 26) |
+                    (rs << 21) |
+                    (ra << 16) |
+                    ((sh & 0x1f) << 11) |
+                    ((mb & 0x1f) << 6) |
+                    ((me & 0x1f) << 1)) >>>
+                    0
+            );
+        },
+        add(rt, ra, rb) {
+            return api.word(((31 << 26) | (rt << 21) | (ra << 16) | (rb << 11) | (266 << 1)) >>> 0);
+        },
         ori(ra, rs, imm) {
             return api.word(((24 << 26) | (rs << 21) | (ra << 16) | (imm & 0xffff)) >>> 0);
         },
@@ -123,6 +141,9 @@ function assemble() {
         /* bctrl: bcctr 20,0 with LK=1 */
         bctrl() {
             return api.word(0x4e800421);
+        },
+        bctr() {
+            return api.word(0x4e800420);
         },
         blr() {
             return api.word(0x4e800020);
@@ -250,6 +271,30 @@ function buildText() {
     a.bLabel("func_e_mid");
     a.lwz(0, 1, 20).mtlr().addi(1, 1, 16).blr();
 
+    /* Switch entry: the compiler's inline branch-table shape. The table
+     * address is built with lis + addic (r0 is GPR0 in addic), the index is
+     * scaled by 4, and bctr jumps into a run of `b` words. Analysis must
+     * promote the entries as table starts; the runtime dispatcher then has
+     * a body for the computed target. Index 0 (the harness passes r3 = 0)
+     * selects case0 and returns 0x11. */
+    a.label("func_s");
+    a.stwu(1, 1, -16).mflr().stw(0, 1, 20);
+    a.addis(0, 0, 0x0001).addic(0, 0, 0x013c);
+    a.rlwinm(3, 3, 2, 0, 29);
+    a.add(0, 3, 0);
+    a.mtctr(0);
+    a.bctr();
+    a.label("switch_table");
+    a.bLabel("switch_case0");
+    a.bLabel("switch_case1");
+    a.bLabel("switch_case2");
+    a.label("switch_case0");
+    a.addi(3, 0, 0x11).lwz(0, 1, 20).mtlr().addi(1, 1, 16).blr();
+    a.label("switch_case1");
+    a.addi(3, 0, 0x22).lwz(0, 1, 20).mtlr().addi(1, 1, 16).blr();
+    a.label("switch_case2");
+    a.addi(3, 0, 0x33).lwz(0, 1, 20).mtlr().addi(1, 1, 16).blr();
+
     return a.finish();
 }
 
@@ -281,6 +326,7 @@ function build() {
         pointer: labels.get("func_d"),
         split: labels.get("func_e"),
         tail: labels.get("func_t"),
+        switch: labels.get("func_s"),
     };
     const tailTarget = labels.get("func_e_mid");
     if (tailTarget !== TAIL_TARGET) {
@@ -483,9 +529,10 @@ function build() {
             rodata: { addr: RODATA_ADDR, size: RODATA_SIZE },
             data: { addr: DATA_ADDR, size: DATA_SIZE },
             bss: { addr: BSS_ADDR, size: BSS_SIZE },
-            functionStarts: [ENTRY.boot, ENTRY.helper, ENTRY.strict, ENTRY.fault, ENTRY.split, ENTRY.tail],
+            functionStarts: [ENTRY.boot, ENTRY.helper, ENTRY.strict, ENTRY.fault, ENTRY.split, ENTRY.tail, ENTRY.switch],
             pointerStarts: [ENTRY.pointer],
-            tailStarts: [TAIL_TARGET],
+            tableStarts: [ENTRY.switch + 0x24, ENTRY.switch + 0x28, ENTRY.switch + 0x2c],
+            tailStarts: [TAIL_TARGET, ENTRY.switch + 0x30, ENTRY.switch + 0x44, ENTRY.switch + 0x58],
             segments: mapped.length,
             bytes,
             bssBytes,

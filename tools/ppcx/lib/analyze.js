@@ -14,12 +14,17 @@
  *   4. a u32 in .rodata that an ADDR32 relocation patches to point into
  *      .text is a code pointer; its target is reported separately as a
  *      `pointerStart` (vtables, callback tables and tiny constant getters
- *      that no branch scan can reach).
+ *      that no branch scan can reach);
+ *   5. the entries of an inline `b`-table switch (reached only through a
+ *      computed `bctr`) are reported as `tableStarts`; promoting them splits
+ *      ranges and exposes the case labels, which the cross-range fixpoint
+ *      then records as `tailStarts`.
  *
  * Ranges are then [start_i, start_{i+1}), which is exact when the
- * discovery found every start and approximate otherwise (jump tables and
- * pointer-only functions are invisible to a branch scan — the local Ghidra
- * census is used to measure the overlap in the research notes).
+ * discovery found every start and approximate otherwise (absolute pointer
+ * tables are covered by relocation-derived starts and inline branch tables
+ * by `tableStarts`; runtime-built targets remain invisible to a static
+ * scan — the local Ghidra census is used to measure the overlap).
  *
  * This code is original to the BotW-PC project and licensed under MIT.
  */
@@ -88,8 +93,8 @@ function readTextPointers(buf, parsed, base, textEnd) {
  * splits a range, which can expose new cross-range pairs, so this iterates
  * to a fixpoint. Returns the sorted addresses to add (never in `union`).
  */
-function findCrossRangeTailTargets(branchStarts, pointerSet, directPairs, textEnd) {
-    let union = [...branchStarts, ...pointerSet].sort((a, b) => a - b);
+function findCrossRangeTailTargets(branchStarts, pointerSet, directPairs, textEnd, extraStarts = []) {
+    let union = [...branchStarts, ...pointerSet, ...extraStarts].sort((a, b) => a - b);
     const added = new Set();
     for (;;) {
         const candidates = new Set();
@@ -127,6 +132,159 @@ function upperBound(arr, value) {
         else hi = mid;
     }
     return lo;
+}
+
+/* -------------------------------------------------------------------------
+ * Inline branch tables
+ *
+ * Metrowerks emits small switches as an inline table of `b` instructions
+ * immediately after the dispatch:
+ *
+ *     addis r0, 0, table@ha      (or lis)
+ *     addic r0, r0, table@l      (addic: r0 is a real register here)
+ *     slwi  rX, rX, 2
+ *     add   r0, rX, r0
+ *     mtctr r0
+ *     bctr
+ *   table:
+ *     b case0
+ *     b case1
+ *     ...
+ *
+ * The entries are code inside the function body, so no branch target and no
+ * relocation points at them; without promotion `PPCX_DISPATCH` rejects the
+ * computed target at run time. This pass recognises the exact shape and
+ * returns every entry address of the run. The register tracer is deliberately
+ * small: it follows the compiler's lis/addi/addic/mr chains backwards inside
+ * one basic block and gives up on anything else.
+ * ----------------------------------------------------------------------- */
+
+const DEF_LOADS = new Set([
+    "lwz", "lwzu", "lwzx", "lwzux", "lhz", "lhzu", "lhzx", "lhzux",
+    "lha", "lhau", "lhax", "lhaux", "lbz", "lbzu", "lbzx", "lbzux",
+    "lwa", "lwax", "lwarx", "lfs", "lfsx", "lfd", "lfdx",
+]);
+const DEF_D_FORM = new Set([
+    "addi", "addis", "addic", "addic.", "ori", "oris", "xori", "xoris",
+    "andi.", "andis.",
+]);
+const DEF_ARITH = new Set([
+    "add", "addc", "adde", "addme", "addze", "subf", "subfc", "subfe",
+    "subfme", "subfze", "mullw", "mulhw", "mulhwu", "divw", "divwu", "neg",
+]);
+const DEF_LOGICAL = new Set(["and", "andc", "or", "orc", "xor", "nand", "nor", "eqv"]);
+const DEF_SHIFT = new Set(["rlwinm", "rlwimi", "rlwnm", "srawi", "slw", "srw", "sraw", "extsh", "extsb", "cntlzw"]);
+
+/**
+ * Destination register of an instruction, or -1 when it does not write one.
+ * The decoder exposes the raw operand fields, so the destination differs by
+ * form: `add`/loads/`addi` write `rt`, while `or` and the shift/logical
+ * forms write `ra` (rA in the ISA tables).
+ */
+function destinationOf(ins) {
+    if (!ins.supported || ins.branch || ins.name === "mtspr") return -1;
+    if (DEF_LOADS.has(ins.name) || DEF_D_FORM.has(ins.name) || DEF_ARITH.has(ins.name)) return ins.rt;
+    if (DEF_LOGICAL.has(ins.name) || DEF_SHIFT.has(ins.name)) return ins.ra;
+    if (ins.name === "mfspr" || ins.name === "mfcr" || ins.name === "mfmsr" || ins.name === "mftb") return ins.rt;
+    return -1;
+}
+
+function textIns(data, base, addr) {
+    const ins = decode(data.readUInt32BE(addr - base));
+    ins.addr = addr;
+    return ins;
+}
+
+/**
+ * Nearest earlier writer of `reg` inside the basic block that ends at
+ * `fromAddr`. Any branch ends the search: a preceding `bl` may have
+ * clobbered r0-r12, and every other branch ends the block.
+ */
+function findWriter(data, base, fromAddr, reg, stop) {
+    let addr = fromAddr - 4;
+    for (let n = 0; n < 48 && addr >= stop; n++, addr -= 4) {
+        const ins = textIns(data, base, addr);
+        if (ins.branch) return null;
+        if (destinationOf(ins) === reg) return ins;
+    }
+    return null;
+}
+
+/** Resolve lis/addi/addic/mr chains to an absolute value, or null. */
+function resolveConstant(data, base, fromAddr, reg, stop, depth = 0) {
+    if (depth > 4) return null;
+    const w = findWriter(data, base, fromAddr, reg, stop);
+    if (!w) return null;
+    // addi/addis with rA=0 are the li/lis idiom (the literal zero is used,
+    // not GPR0). addic is different: rA=0 really means GPR0.
+    if (w.name === "addis" && w.ra === 0) return (w.imm << 16) >>> 0;
+    if (w.name === "addi" && w.ra === 0) return w.imm >>> 0;
+    if (w.name === "addi" || w.name === "addic" || w.name === "addic.") {
+        const b = resolveConstant(data, base, w.addr, w.ra, stop, depth + 1);
+        return b === null ? null : (b + w.imm) >>> 0;
+    }
+    if (w.name === "addis") {
+        const b = resolveConstant(data, base, w.addr, w.ra, stop, depth + 1);
+        return b === null ? null : (b + ((w.imm << 16) >>> 0)) >>> 0;
+    }
+    // `or rD, rS, rS` is mr rD, rS.
+    if (w.name === "or" && w.rt === w.rb) {
+        return resolveConstant(data, base, w.addr, w.rt, stop, depth + 1);
+    }
+    return null;
+}
+
+/**
+ * Branch-table entries: for every `bctr` whose CTR comes from
+ * `add rIdx, rBase` with a statically known in-text table address, return
+ * the addresses of the consecutive `b` words at that table. Entries already
+ * in `starts` are ignored (they have a body already).
+ */
+function findBranchTableStarts(data, base, textEnd, starts) {
+    const words = Math.floor((textEnd - base) / 4);
+    const out = new Set();
+    for (let i = 0; i < words; i++) {
+        if (data.readUInt32BE(i * 4) !== BCTR) continue;
+        const site = base + i * 4;
+        const si = upperBound(starts, site) - 1;
+        if (si < 0) continue;
+        const stop = starts[si];
+
+        let mtctr = null;
+        for (let p = site - 4, n = 0; p >= stop && n < 16; p -= 4, n++) {
+            const ins = textIns(data, base, p);
+            if (ins.branch) break;
+            if (ins.name === "mtspr" && ins.spr === 9) {
+                mtctr = ins;
+                break;
+            }
+        }
+        if (!mtctr) continue;
+
+        const writer = findWriter(data, base, mtctr.addr, mtctr.rt, stop);
+        if (!writer || writer.name !== "add") continue;
+
+        let table = null;
+        for (const reg of [writer.ra, writer.rb]) {
+            const v = resolveConstant(data, base, writer.addr, reg, stop);
+            if (v !== null && v >= base && v < textEnd) {
+                table = v;
+                break;
+            }
+        }
+        if (table === null) continue;
+        if (starts[upperBound(starts, table) - 1] === table) continue;
+        if (textIns(data, base, table).branch !== "b") continue;
+
+        for (let p = table; p + 4 <= textEnd && p - table < 256 * 4; p += 4) {
+            const ins = textIns(data, base, p);
+            if (ins.branch !== "b") break;
+            const target = ins.aa ? ins.li >>> 0 : (p + ins.li) >>> 0;
+            if (target < base || target >= textEnd) break;
+            out.add(p);
+        }
+    }
+    return [...out].sort((a, b) => a - b);
 }
 
 /**
@@ -206,11 +364,17 @@ function analyzeRpx(buf, parsed, opts = {}) {
 
     const sortedStarts = [...starts].sort((a, b) => a - b);
 
+    // Inline branch tables are code entries inside a function body. Promote
+    // them before the cross-range fixpoint: each entry splits a range, which
+    // in turn exposes the case labels its `b` targets point at.
+    const tableEntries = findBranchTableStarts(data, base, textEnd, sortedStarts);
+    const tableStarts = tableEntries.filter((p) => !starts.has(p) && !pointerSet.has(p));
+
     // Cross-range direct-branch targets: a `b` to an address outside the
     // site's own range becomes a runtime dispatch, so the target must be a
     // registered start. Computed over the final partition (branch starts
-    // plus pointer starts) and iterated to a fixpoint.
-    const tailStarts = findCrossRangeTailTargets(sortedStarts, pointerSet, directPairs, textEnd);
+    // plus pointer starts plus table entries) and iterated to a fixpoint.
+    const tailStarts = findCrossRangeTailTargets(sortedStarts, pointerSet, directPairs, textEnd, tableStarts);
     const ranges = [];
     let fullySupported = 0;
     let withCalls = 0;
@@ -260,6 +424,7 @@ function analyzeRpx(buf, parsed, opts = {}) {
         functionCount: sortedStarts.length,
         functionStarts: sortedStarts,
         pointerStarts: extraPointerStarts,
+        tableStarts,
         tailStarts,
         ranges,
         coverage: {
@@ -276,6 +441,7 @@ function analyzeRpx(buf, parsed, opts = {}) {
             functionsWithInboundCall: withCalls,
             pointerStartsTotal: pointerSet.size,
             pointerStartsExtra: extraPointerStarts.length,
+            tableStartsAdded: tableStarts.length,
             tailStartsAdded: tailStarts.length,
         },
     };

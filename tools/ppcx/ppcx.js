@@ -114,7 +114,7 @@ function loadRpx(file) {
     return loadRpxFrom(fs.readFileSync(file), file);
 }
 
-const ANALYSIS_VERSION = 8; // bump when decode/analysis semantics change
+const ANALYSIS_VERSION = 9; // bump when decode/analysis semantics change
 
 function computeAnalysis(rpx) {
     const a = analyzeRpx(rpx.buf, rpx.parsed);
@@ -126,6 +126,7 @@ function computeAnalysis(rpx) {
         functionCount: a.functionCount,
         functionStarts: a.functionStarts,
         pointerStarts: a.pointerStarts,
+        tableStarts: a.tableStarts,
         tailStarts: a.tailStarts,
         coverage: a.coverage,
         stats: a.stats,
@@ -165,6 +166,7 @@ function cmdAnalyze(args) {
     const ptrTotal = analysis.stats.pointerStartsTotal ?? 0;
     const ptrExtra = analysis.stats.pointerStartsExtra ?? 0;
     console.log(`pointers:  ${ptrTotal} .rodata/.data code pointers, ${ptrExtra} extra function starts`);
+    console.log(`tables:    ${analysis.stats.tableStartsAdded ?? 0} inline branch-table entries added as starts`);
     console.log(`tails:     ${analysis.stats.tailStartsAdded ?? 0} cross-range branch targets added as starts`);
     const cov = analysis.coverage;
     const total = cov.supported + cov.unsupported + cov.unknown;
@@ -273,6 +275,7 @@ function translateModule({ rpx, analysis, roots, entry, follow = 0, max = 256 })
     const startSet = new Set([
         ...analysis.functionStarts,
         ...(analysis.pointerStarts || []),
+        ...(analysis.tableStarts || []),
         ...(analysis.tailStarts || []),
     ]);
     const ranges = buildRangeMap([...startSet].sort((a, b) => a - b), rpx.base + rpx.size);
@@ -440,6 +443,7 @@ function cmdTranslate(args) {
     const startSet = new Set([
         ...analysis.functionStarts,
         ...(analysis.pointerStarts || []),
+        ...(analysis.tableStarts || []),
         ...(analysis.tailStarts || []),
     ]);
     const root = numArg(args.fn, undefined, "--fn address");

@@ -176,8 +176,11 @@ test("untranslated call targets dispatch at runtime", () => {
 });
 
 test("indirect tails through CTR dispatch and return", () => {
-    const r = translate([0x4e800420, 0x4e800020]); // bctr
-    assert.match(r.code, /\{\n\s+PPCX_DISPATCH\(c, c->ctr & ~3u\);\n\s+return;\n\s+\}/);
+    const r = translate([0x4e800420, 0x4e800020]); // bctr (bcctr 20, 0)
+    // Canonical bctr is unconditional: no ppcx_bc gate, so CTR is not
+    // decremented before the dispatch (that would retarget the jump).
+    assert.doesNotMatch(r.code, /ppcx_bc/);
+    assert.match(r.code, /\{\n {8}PPCX_DISPATCH\(c, c->ctr & ~3u\);\n {8}return;\n {4}\}/);
 });
 
 test("bctrl calls through CTR and keeps running", () => {
