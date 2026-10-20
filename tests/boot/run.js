@@ -27,6 +27,11 @@
  *   - pointer:   a function only reachable through a .rodata code pointer;
  *   - tail:      a `b` that crosses into another range executes the mid-body
  *                entry point that the cross-range fixpoint discovered;
+ *   - switch:    a computed bctr into an inline `b`-table whose entries the
+ *                analysis promotes as table starts;
+ *   - procui:    the five modeled proc_ui lifecycle calls run through the
+ *                import substitution; the post-shutdown message pump must
+ *                report EXITING (3) and the entry returns 0x47 from it;
  *   - fault:     a read outside every mapped region stops with exit 9;
  *   - no-image:  the same boot without PPCX_IMAGE faults at the first data
  *                read instead of silently reading zeroes.
@@ -86,10 +91,10 @@ function buildScenario() {
     const blob = serializeImage(plan);
 
     const e = f.expected;
-    const translatedFunctions = 14; /* the six authored entries, the three
-                                      inline branch-table entries, the helper,
-                                      the tail target and the three switch
-                                      case bodies reached through the table */
+    const translatedFunctions = 15; /* the seven authored entries plus the
+                                      helper, the tail target, the three
+                                      inline branch-table entries and the
+                                      three switch case bodies */
     const imageLine =
         `ppcx: image <image> mapped: ${e.segments} segment(s), ${e.bytes} bytes (1 BSS)`;
     const entryLine = (addr) => `ppcx: entry 0x${hex8(addr)}, ${translatedFunctions} translated function(s)`;
@@ -124,7 +129,7 @@ function buildScenario() {
                 imageLine,
                 entryLine(e.entry.boot),
                 `ppcx: dispatch 0x${hex8(e.entry.boot)}`,
-                "ppcx: HLE modeled #1: coreinit.memcpy (import 1), r3=0x00020300",
+                "ppcx: HLE modeled #1: coreinit.memcpy (import 2), r3=0x00020300",
                 "ppcx: dispatch 0x50000000", /* import trampoline (ADDR16 site) */
                 "ppcx: HLE modeled #2: coreinit.OSBlockMove (import 0), r3=0x00020310",
                 "ppcx: entry returned, r3 = 0x11223344",
@@ -141,7 +146,7 @@ function buildScenario() {
             stderr: [
                 imageLine,
                 entryLine(e.entry.strict),
-                "ppcx: HLE unimplemented #1: proc_ui.ProcUIInit (import 2) [diagnostic no-op]",
+                "ppcx: HLE unimplemented #1: coreinit.OSSleepTicks (import 1) [diagnostic no-op]",
                 "ppcx: entry returned, r3 = 0x00000001",
                 "ppcx: HLE calls: 1 (unimplemented services remain)",
             ],
@@ -156,7 +161,7 @@ function buildScenario() {
             stderr: [
                 imageLine,
                 entryLine(e.entry.strict),
-                "ppcx: unimplemented HLE: proc_ui.ProcUIInit (import 2) in strict mode",
+                "ppcx: unimplemented HLE: coreinit.OSSleepTicks (import 1) in strict mode",
                 dumpLine(FIRST_SP - 16, 0, 1, 0x000100a4, 0),
             ],
             stdout: [],
@@ -205,6 +210,27 @@ function buildScenario() {
                 "ppcx: HLE calls: 0 (unimplemented services remain)",
             ],
             stdout: probesToStdout(initialProbes, 0, 0),
+        },
+        {
+            id: "procui",
+            entry: e.entry.procui,
+            env: { PPCX_HLE_TRACE: "1" },
+            image: true,
+            status: 0,
+            stderr: [
+                imageLine,
+                entryLine(e.entry.procui),
+                "ppcx: HLE modeled #1: proc_ui.ProcUIInit (import 4), r3=0x00010048",
+                "ppcx: HLE modeled #2: proc_ui.ProcUIRegisterCallback (import 6), r3=0x00000005",
+                "ppcx: HLE modeled #3: proc_ui.ProcUIProcessMessages (import 5), r3=0x00000000",
+                "ppcx: HLE modeled #4: proc_ui.ProcUIDrawDoneRelease (import 3), r3=0x00000000",
+                "ppcx: HLE modeled #5: proc_ui.ProcUIProcessMessages (import 5), r3=0x00000000",
+                "ppcx: HLE modeled #6: proc_ui.ProcUIShutdown (import 7), r3=0x00000000",
+                "ppcx: HLE modeled #7: proc_ui.ProcUIProcessMessages (import 5), r3=0x00000003",
+                "ppcx: entry returned, r3 = 0x00000047",
+                "ppcx: HLE calls: 7 (unimplemented services remain)",
+            ],
+            stdout: probesToStdout(initialProbes, 0, 7),
         },
         {
             id: "fault",
@@ -367,6 +393,7 @@ function runBoot(opts = {}) {
         f.expected.entry.pointer,
         f.expected.entry.tail,
         f.expected.entry.switch,
+        f.expected.entry.procui,
         /* The computed bctr target is invisible to the translator's static
          * callee walk, so the harness emits the discovered table entries as
          * explicit roots (same reason the pointer-only getter is a root). */
@@ -381,10 +408,10 @@ function runBoot(opts = {}) {
         );
     }
     const reference = translationByEntry.get(f.expected.entry.boot);
-    if (reference.report.totals.functions !== 14) {
+    if (reference.report.totals.functions !== 15) {
         failures.push({
             id: "translate.functions",
-            detail: `expected 14 translated functions, got ${reference.report.totals.functions}`,
+            detail: `expected 15 translated functions, got ${reference.report.totals.functions}`,
         });
     }
     if (reference.report.totals.unsupportedInstructions !== 0 || reference.report.totals.warnings !== 0) {
@@ -393,10 +420,10 @@ function runBoot(opts = {}) {
             detail: `${reference.report.totals.unsupportedInstructions} unsupported, ${reference.report.totals.warnings} warnings`,
         });
     }
-    if (reference.report.totals.instructions !== 95) {
+    if (reference.report.totals.instructions !== 120) {
         failures.push({
             id: "translate.instructions",
-            detail: `expected 95 instructions, got ${reference.report.totals.instructions}`,
+            detail: `expected 120 instructions, got ${reference.report.totals.instructions}`,
         });
     }
     const tailCall = `PPCX_TAILCALL(c, f_${hex8(f.expected.tailStarts[0])});`;
@@ -412,8 +439,13 @@ function runBoot(opts = {}) {
     }
     const wantHle = new Map([
         [0, { label: "coreinit.OSBlockMove", calls: 0, addressTaken: 1 }],
-        [1, { label: "coreinit.memcpy", calls: 1, addressTaken: 0 }],
-        [2, { label: "proc_ui.ProcUIInit", calls: 1, addressTaken: 0 }],
+        [1, { label: "coreinit.OSSleepTicks", calls: 1, addressTaken: 0 }],
+        [2, { label: "coreinit.memcpy", calls: 1, addressTaken: 0 }],
+        [3, { label: "proc_ui.ProcUIDrawDoneRelease", calls: 1, addressTaken: 0 }],
+        [4, { label: "proc_ui.ProcUIInit", calls: 1, addressTaken: 0 }],
+        [5, { label: "proc_ui.ProcUIProcessMessages", calls: 3, addressTaken: 0 }],
+        [6, { label: "proc_ui.ProcUIRegisterCallback", calls: 1, addressTaken: 0 }],
+        [7, { label: "proc_ui.ProcUIShutdown", calls: 1, addressTaken: 0 }],
     ]);
     if (reference.report.hleImportsUsed.length !== wantHle.size) {
         failures.push({ id: "translate.hle", detail: JSON.stringify(reference.report.hleImportsUsed) });

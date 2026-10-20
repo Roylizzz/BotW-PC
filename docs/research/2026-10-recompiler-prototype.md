@@ -122,19 +122,21 @@ first GX2 frame?
    statements, TCC compiles the unit, and the runtime prints:
 
    ```
-   ppcx: entry 0x031FA4CC, 1 translated function(s)
+   ppcx: HLE modeled #1: proc_ui.ProcUIInit (import 359), r3=0x031FA4C8
    ppcx: entry returned, r3 = 0x031FA4C8
    ppcx: HLE calls: 1 (unimplemented services remain)
    ```
 
-   `PPCX_HLE_TRACE=1` logs the per-call line (`HLE unimplemented #1:
-   proc_ui.ProcUIInit (import 359) [diagnostic no-op]`) and
-   `PPCX_HLE_STRICT=1` stops there with the register dump and exit code 5;
-   13 coreinit identity and memory/cache calls are modeled and `ProcUIInit`
-   is not one of them. This exercises decode, relocation-driven HLE
-   substitution, the tail-call convention, the dispatcher, the HLE name
-   table and the TCC ABI in one shot — and confirms the boot-path note's
-   reading of that method.
+   `PPCX_HLE_TRACE=1` logs the modeled call. `ProcUIInit` is void, so
+   `r3 = 0x031FA4C8` is the save-callback argument left untouched by the
+   model, not a documented return value. Eighteen exact-name calls are
+   modeled (13 coreinit identity/memory/cache plus the five proc_ui
+   lifecycle calls), so this entry now completes with exit code 0 under
+   `PPCX_HLE_STRICT=1`; strict rejection is gated separately by the boot
+   fixture's unmodeled `coreinit.OSSleepTicks` call (exit 5). This exercises
+   decode, relocation-driven HLE substitution, the tail-call convention, the
+   dispatcher, the HLE name table and the TCC ABI in one shot — and confirms
+   the boot-path note's reading of that method.
 
 7. **Runtime skeleton.** One flat arena of `0xC2000000` bytes covers every
    address the module is linked for (import slots sit at `0xC0000000`);
@@ -144,8 +146,8 @@ first GX2 frame?
    `~0x105DB1C0`); unsupported instructions and unregistered targets stop
    with an address + register dump. `PPCX_HLE_TRACE=1` logs every HLE call,
    `PPCX_HLE_STRICT=1` aborts on the first unimplemented one (exit code 5);
-   13 coreinit identity and memory/cache calls are modeled and stay
-   available.
+   18 exact-name calls are modeled (13 coreinit identity/memory/cache and
+   five proc_ui lifecycle) and stay available.
 
 8. **Audit correction pass (2026-10-18).** An independent source audit fixed
    thirteen semantic defects in the runtime ABI, the decoder and the
@@ -190,29 +192,31 @@ first GX2 frame?
    `loader: 62 state lines, 10 negative blobs, read-only write fault … loader: OK`.
 
    The synthetic boot fixture (`tests/boot`) closes the loop from authored
-   RPX bytes to a booted guest. It builds a game-free RPX (eight functions
-   plus an inline three-entry `b`-table and three case bodies, three imports —
-   one called directly through a REL24 site, one reached through an ADDR16
-   trampoline, one unmodeled — three relocated `.rodata` pointers with one
-   addend, two deferred TLS sites, `.data`/`.bss` and the allocated metadata
-   trio), runs the real `analyze` → `translateModule` → `buildImage` pipeline
-   and compiles the result with the real runtime, checked-memory model and
-   HLE layer. Eight scenarios compare every stderr/stdout line: a boot with
+   RPX bytes to a booted guest. It builds a game-free RPX (nine functions
+   plus an inline three-entry `b`-table and three case bodies, eight imports —
+   `coreinit.memcpy` called directly, `OSBlockMove` taken by address,
+   `coreinit.OSSleepTicks` left unmodeled, and all five proc_ui lifecycle
+   calls — three relocated `.rodata` pointers with one addend, two deferred
+   TLS sites, `.data`/`.bss` and the allocated metadata trio), runs the real
+   `analyze` → `translateModule` → `buildImage` pipeline and compiles the
+   result with the real runtime, checked-memory model and HLE layer. Nine
+   scenarios compare every stderr/stdout line: a boot with
    `PPCX_HLE_TRACE`/`PPCX_DISPATCH_TRACE` checkpoints, an unmodeled import
    tolerated as a counted no-op, strict mode (exit 5 + register dump), a
    pointer-only getter, a cross-range tail `b` that runs a mid-body entry
    point discovered by the analysis (it lands after `addi r3,0,0x40`, so the
    expected `r3 = 2` proves the entry point; entering the split function from
    its top would leave `0x42`), a computed `bctr` switch that must dispatch
-   to the inline table entry at `0x1013C` and return `r3 = 0x11`, a read
-   outside every region (exit 9) and the same boot without `PPCX_IMAGE`
-   (fault at the first data read instead of zeroes); guest probes assert the
-   applied relocations, the untouched TLS bytes and the two copied words in
-   `.data`/`.bss`, and the boot run must repeat byte-identically.
-   `node tests/boot/run.js` → `boot: 8 scenarios (6 entries compiled), 39
-   transcript lines, 60 memory probe lines … boot: OK, the synthetic RPX
-   boots headless with stable checkpoints` (TCC 0.9.27, switch scenario added
-   2026-10-20).
+   to the inline table entry at `0x1013C` and return `r3 = 0x11`, the five
+   proc_ui lifecycle calls ending with a post-shutdown `EXITING` status
+   (`r3 = 0x47`), a read outside every region (exit 9) and the same boot
+   without `PPCX_IMAGE` (fault at the first data read instead of zeroes);
+   guest probes assert the applied relocations, the untouched TLS bytes and
+   the two copied words in `.data`/`.bss`, and the boot run must repeat
+   byte-identically. `node tests/boot/run.js` → `boot: 9 scenarios (7 entries
+   compiled), 50 transcript lines, 72 memory probe lines … boot: OK, the
+   synthetic RPX boots headless with stable checkpoints` (TCC 0.9.27, proc_ui
+   scenario added 2026-10-20).
 
    The fixture paid for itself immediately by finding three real defects. (1)
    Address-taken imports were absent from the generated `ppcx_import_name`
@@ -234,13 +238,16 @@ first GX2 frame?
    regression test asserts no `ppcx_bc` gate. All three were observed as
    failing transcripts before the fixes (10 and 4 reported failures in the
    two mutation runs — reverting the frame and changing one authored data
-   word); the v208 demo afterwards is unchanged (`r3 = 0x031FA4C8`,
-   `proc_ui.ProcUIInit` still reported, strict exit 5). The cross-range tail
-   start has its own mutation gate: with the analyzer from before the
-   fixpoint, the same fixture reports 14 failing expectations, including the
-   real runtime `branch or call to an address with no registered function
-   (0x000100F0)` followed by exit 4 — the exact failure mode the analysis
-   fixpoint removes.
+   word); the v208 demo afterwards runs the same entry with the modeled
+   `proc_ui.ProcUIInit` and exits 0 in strict mode (`r3 = 0x031FA4C8` is the
+   untouched void-call argument). The proc_ui scenario added on 2026-10-20
+   gates the lifecycle order and the post-shutdown `EXITING` status through
+   the same import substitution. The cross-range tail start has its own
+   mutation gate: with the analyzer from before the fixpoint, the same
+   fixture reports 14 failing expectations, including the real runtime
+   `branch or call to an address with no registered function (0x000100F0)`
+   followed by exit 4 — the exact failure mode the analysis fixpoint
+   removes.
 
 10. **Independent decode cross-check (2026-10-19).** The whole decompressed
     `.text` was disassembled with rizin through REA (`asm.arch=ppc`,
@@ -363,10 +370,16 @@ first GX2 frame?
   effects; exit code 9 on a read-only or unmapped target) and `OSBlockMove`
   implements the documented overlap explicitly, because the local TCC's
   `memmove` was measured to copy forward and corrupt an overlapping
-  destination (2026-10-19). Remaining tier 1 work: `OSGetSystemTime` /
-  `OSGetTime` (491 sites, clock semantics still to define), TLS
-  (`__tls_get_addr`, 3,371 sites) and the `_iob` / `__gh_FOPEN_MAX` data
-  slots; then proc_ui/padscore stubs.
+  destination (2026-10-19). The five proc_ui lifecycle calls landed
+  2026-10-20 with a deterministic headless state machine: init records a
+  non-NULL save callback, message pumps report `IN_FOREGROUND` while
+  initialized and `EXITING` after shutdown, DrawDoneRelease is a counted
+  no-op, and callback registrations are recorded (bounded at 16) but never
+  invoked because there is no HOME-menu integration. Remaining tier 1 work:
+  `OSGetSystemTime` / `OSGetTime` (491 sites, clock semantics still to
+  define), TLS (`__tls_get_addr`, 3,371 sites) and the `_iob` /
+  `__gh_FOPEN_MAX` data slots; then padscore/input, filesystem and threading
+  models.
 - **GX2 bootstrap:** drive the documented chain (entry `0x03C70404` →
   `FUN_02c5e5f4` → … → `FUN_0309bbb0`, the only `GX2Init` site at
   `0x0309BC80`) with dispatch tracing, then model GX2 calls as

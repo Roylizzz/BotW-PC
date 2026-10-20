@@ -227,13 +227,121 @@ static int test_cache_and_barrier(void) {
     return 0;
 }
 
+static int test_procui_lifecycle(void) {
+    Cpu cpu;
+    Cpu before;
+    const PpcxProcUiState *s;
+    unsigned i;
+
+    ppcx_hle_procui_reset();
+    s = ppcx_hle_procui_state();
+    if (s->initialized != 0u || s->status != 3u) return fail("proc_ui reset state");
+
+    /* ProcUIInit is void and documents a non-NULL save callback. */
+    memset(&cpu, 0, sizeof cpu);
+    if (ppcx_hle_dispatch_named(&cpu, "proc_ui.ProcUIInit") != 1) return fail("ProcUIInit unresolved");
+    s = ppcx_hle_procui_state();
+    if (s->initialized != 0u || s->invalid_init != 1u || s->status != 3u) return fail("ProcUIInit accepted NULL");
+
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 0x12345678u;
+    before = cpu;
+    if (ppcx_hle_dispatch_named(&cpu, "proc_ui.ProcUIInit") != 1) return fail("ProcUIInit unresolved");
+    if (memcmp(&cpu, &before, sizeof cpu) != 0) return fail("ProcUIInit changed registers");
+    s = ppcx_hle_procui_state();
+    if (s->initialized != 1u || s->shutdown != 0u || s->status != 0u) return fail("ProcUIInit state");
+    if (s->save_callback != 0x12345678u || s->init_calls != 1u) return fail("ProcUIInit arguments");
+
+    /* RegisterCallback is void: r3-r6 are inputs and stay untouched. */
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 5u;
+    cpu.gpr[4] = 0x00010048u;
+    cpu.gpr[5] = 0u;
+    cpu.gpr[6] = 1u;
+    before = cpu;
+    if (ppcx_hle_dispatch_named(&cpu, "proc_ui.ProcUIRegisterCallback") != 1) return fail("ProcUIRegisterCallback unresolved");
+    if (memcmp(&cpu, &before, sizeof cpu) != 0) return fail("ProcUIRegisterCallback changed registers");
+    s = ppcx_hle_procui_state();
+    if (s->callback_count != 1u || s->callbacks_registered != 1u) return fail("ProcUIRegisterCallback count");
+    if (s->callbacks[0].type != 5u || s->callbacks[0].fn != 0x00010048u) return fail("ProcUIRegisterCallback type/fn");
+    if (s->callbacks[0].param != 0u || s->callbacks[0].priority != 1u) return fail("ProcUIRegisterCallback param/priority");
+
+    /* A NULL callback is rejected, not stored. */
+    memset(&cpu, 0, sizeof cpu);
+    if (ppcx_hle_dispatch_named(&cpu, "proc_ui.ProcUIRegisterCallback") != 1) return fail("ProcUIRegisterCallback NULL unresolved");
+    s = ppcx_hle_procui_state();
+    if (s->callback_count != 1u || s->callbacks_rejected != 1u) return fail("ProcUIRegisterCallback accepted NULL");
+
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 1u;
+    before = cpu;
+    if (ppcx_hle_dispatch_named(&cpu, "proc_ui.ProcUIProcessMessages") != 1) return fail("ProcUIProcessMessages unresolved");
+    if (cpu.gpr[3] != 0u) return fail("ProcUIProcessMessages foreground status");
+    before.gpr[3] = 0u;
+    if (memcmp(&cpu, &before, sizeof cpu) != 0) return fail("ProcUIProcessMessages changed registers");
+    s = ppcx_hle_procui_state();
+    if (s->process_messages_calls != 1u || s->last_block != 1u || s->status != 0u) return fail("ProcUIProcessMessages state");
+
+    memset(&cpu, 0x5a, sizeof cpu);
+    before = cpu;
+    if (ppcx_hle_dispatch_named(&cpu, "proc_ui.ProcUIDrawDoneRelease") != 1) return fail("ProcUIDrawDoneRelease unresolved");
+    if (memcmp(&cpu, &before, sizeof cpu) != 0) return fail("ProcUIDrawDoneRelease changed registers");
+    s = ppcx_hle_procui_state();
+    if (s->draw_done_releases != 1u) return fail("ProcUIDrawDoneRelease count");
+
+    memset(&cpu, 0x5a, sizeof cpu);
+    before = cpu;
+    if (ppcx_hle_dispatch_named(&cpu, "proc_ui.ProcUIShutdown") != 1) return fail("ProcUIShutdown unresolved");
+    if (memcmp(&cpu, &before, sizeof cpu) != 0) return fail("ProcUIShutdown changed registers");
+    s = ppcx_hle_procui_state();
+    if (s->shutdown_calls != 1u || s->initialized != 0u || s->shutdown != 1u || s->status != 3u) {
+        return fail("ProcUIShutdown state");
+    }
+
+    /* After shutdown ProcessMessages must report EXITING. */
+    memset(&cpu, 0, sizeof cpu);
+    if (ppcx_hle_dispatch_named(&cpu, "proc_ui.ProcUIProcessMessages") != 1) return fail("post-shutdown ProcessMessages unresolved");
+    if (cpu.gpr[3] != 3u) return fail("post-shutdown ProcessMessages status");
+    s = ppcx_hle_procui_state();
+    if (s->process_messages_calls != 2u || s->last_block != 0u) return fail("post-shutdown ProcessMessages state");
+
+    /* Re-init clears the lifecycle and the stale callback table. */
+    memset(&cpu, 0, sizeof cpu);
+    cpu.gpr[3] = 0x55u;
+    if (ppcx_hle_dispatch_named(&cpu, "proc_ui.ProcUIInit") != 1) return fail("ProcUIInit re-init unresolved");
+    s = ppcx_hle_procui_state();
+    if (s->initialized != 1u || s->shutdown != 0u || s->status != 0u) return fail("ProcUIInit re-init state");
+    if (s->callback_count != 0u || s->callbacks_registered != 1u || s->save_callback != 0x55u) {
+        return fail("ProcUIInit re-init did not clear callbacks");
+    }
+
+    /* The table is bounded: one more registration than slots is dropped. */
+    for (i = 0; i < PPCX_PROCUI_MAX_CALLBACKS + 1u; i++) {
+        memset(&cpu, 0, sizeof cpu);
+        cpu.gpr[3] = i;
+        cpu.gpr[4] = 0x1000u + i;
+        cpu.gpr[5] = i;
+        cpu.gpr[6] = 9u;
+        if (ppcx_hle_dispatch_named(&cpu, "proc_ui.ProcUIRegisterCallback") != 1) return fail("bounded registration unresolved");
+    }
+    s = ppcx_hle_procui_state();
+    if (s->callback_count != PPCX_PROCUI_MAX_CALLBACKS) return fail("callback table did not fill");
+    if (s->callbacks_dropped != 1u) return fail("callback overflow was not counted");
+    if (s->callbacks_registered != PPCX_PROCUI_MAX_CALLBACKS + 2u) return fail("callback registration total");
+    if (s->callbacks[0].type != 0u || s->callbacks[0].fn != 0x1000u) return fail("callback table did not start clean");
+    if (s->callbacks[PPCX_PROCUI_MAX_CALLBACKS - 1u].type != PPCX_PROCUI_MAX_CALLBACKS - 1u) {
+        return fail("callback table stored the wrong slot order");
+    }
+    return 0;
+}
+
 static int test_exact_names(void) {
     Cpu cpu;
     Cpu before;
 
     memset(&cpu, 0x55, sizeof cpu);
     before = cpu;
-    if (ppcx_hle_dispatch_named(&cpu, "proc_ui.ProcUIInit") != 0) return fail("nonimplemented function reported implemented");
+    if (ppcx_hle_dispatch_named(&cpu, "proc_ui.ProcUIInitEx") != 0) return fail("nonimplemented function reported implemented");
     if (memcmp(&cpu, &before, sizeof cpu) != 0) return fail("unknown function changed CPU");
     if (ppcx_hle_dispatch_named(&cpu, "coreinit.OSGetCoreIdSuffix") != 0) return fail("non-exact match was accepted");
     if (ppcx_hle_dispatch_named(&cpu, "other.OSGetCoreId") != 0) return fail("incorrect module accepted");
@@ -252,7 +360,8 @@ int main(void) {
     if (test_memset() != 0) return 1;
     if (test_dc_zero_range() != 0) return 1;
     if (test_cache_and_barrier() != 0) return 1;
+    if (test_procui_lifecycle() != 0) return 1;
     if (test_exact_names() != 0) return 1;
-    puts("hle: core identity and memory/cache models, exact matching and register preservation OK");
+    puts("hle: core identity, memory/cache and proc_ui lifecycle models, exact matching and register preservation OK");
     return 0;
 }

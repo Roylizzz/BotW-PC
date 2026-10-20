@@ -83,17 +83,19 @@ The pipeline runs against the real module (9,248,515 words of `.text`):
   v208 dump) translates to C, compiles with the local TCC and runs:
 
   ```
-  ppcx: entry 0x031FA4CC, 1 translated function(s)
+  ppcx: HLE modeled #1: proc_ui.ProcUIInit (import 359), r3=0x031FA4C8
   ppcx: entry returned, r3 = 0x031FA4C8
   ppcx: HLE calls: 1 (unimplemented services remain)
   ```
 
-  `PPCX_HLE_TRACE=1` adds the per-call line
-  (`ppcx: HLE unimplemented #1: proc_ui.ProcUIInit (import 359)
-  [diagnostic no-op]`) and `PPCX_HLE_STRICT=1` stops on the first
-  unimplemented call with the register dump and exit code 5. Thirteen
-  coreinit identity and memory/cache calls are modeled
-  (`src/runtime/src/ppcx_hle.c`); `proc_ui.ProcUIInit` is not one of them.
+  `PPCX_HLE_TRACE=1` shows the modeled call. `ProcUIInit` is a void function,
+  so `r3` still holds the save-callback argument by construction, not as a
+  documented return value. Eighteen exact-name calls are modeled (13
+  `coreinit` identity/memory/cache calls and the five `proc_ui` lifecycle
+  calls in `src/runtime/src/ppcx_hle.c`); this entry now completes with exit
+  code 0 under `PPCX_HLE_STRICT=1`. Strict rejection of an unmodeled call is
+  gated separately by the `tests/boot` scenario that calls
+  `coreinit.OSSleepTicks` (exit code 5).
 
 Full notes, metrics and the remaining gaps towards a first GX2 frame are in
 `docs/research/2026-10-recompiler-prototype.md`.
@@ -236,35 +238,36 @@ processes (read-only destination, unmapped destination, unmapped source,
 read-only `DCZeroRange` block) (`node tests/mem/run.js` → `mem: OK`; the
 job runs in CI).
 
-The synthetic boot harness (`tests/boot`) authors a game-free RPX (eight
-functions plus an inline three-entry `b`-table, three imports, relocated
+The synthetic boot harness (`tests/boot`) authors a game-free RPX (nine
+functions plus an inline three-entry `b`-table, eight imports, relocated
 `.rodata` pointers, two deferred TLS sites, `.data`/`.bss`), runs it through
 the real `analyze` → `translateModule` → `buildImage`/`serializeImage` path,
 compiles the generated unit with the real runtime, checked-memory model,
-image loader and HLE layer, and boots it headless in eight scenarios: modeled
+image loader and HLE layer, and boots it headless in nine scenarios: modeled
 calls through a direct `bl` and through an address-taken import's dispatcher
 trampoline (`PPCX_HLE_TRACE`/`PPCX_DISPATCH_TRACE` transcripts), an unmodeled
-import tolerated as a counted no-op, `PPCX_HLE_STRICT=1` (exit 5 + register
-dump), a pointer-only getter reached from `.rodata`, a cross-range tail `b`
-that runs the mid-body start the analysis fixpoint discovered
-(`PPCX_TAILCALL(c, f_000100F0)`, `r3 = 2` only if the jump skips `addi
-r3,0,0x40`), a computed `bctr` switch that dispatches to its inline table
-entry (`0x1013C`, `r3 = 0x11`), an unmapped read (exit 9) and the same boot
-without `PPCX_IMAGE` (exit 9 at the first data read). Every stderr/stdout line
-and every guest-memory probe is compared with fixture-authored expectations,
-and the boot run must repeat byte-identically (`node tests/boot/run.js` →
-`boot: 8 scenarios … boot: OK`). The fixture found three defects now gated
-there: address-taken imports missing from `ppcx_import_name`, an initial SP
-that left the loader's ABI frame outside the stack region, and canonical
-`blr`/`bctr` omitting `BO`/`BI` so the switch dispatch gate decremented CTR
-and shifted the target by one word; the tail scenario additionally gates the
-cross-range start fixpoint (pre-fixpoint analyzer → 14 failures, including
-the runtime exit 4 at `0x000100F0`).
+`coreinit.OSSleepTicks` tolerated as a counted no-op, `PPCX_HLE_STRICT=1`
+(exit 5 + register dump), a pointer-only getter reached from `.rodata`, a
+cross-range tail `b` that runs the mid-body start the analysis fixpoint
+discovered (`PPCX_TAILCALL(c, f_000100F0)`, `r3 = 2` only if the jump skips
+`addi r3,0,0x40`), a computed `bctr` switch that dispatches to its inline
+table entry (`0x1013C`, `r3 = 0x11`), the five modeled `proc_ui` lifecycle
+calls with a post-shutdown `EXITING` status (`r3 = 0x47`), an unmapped read
+(exit 9) and the same boot without `PPCX_IMAGE` (exit 9 at the first data
+read). Every stderr/stdout line and every guest-memory probe is compared with
+fixture-authored expectations, and the boot run must repeat byte-identically
+(`node tests/boot/run.js` → `boot: 9 scenarios … boot: OK`). The fixture found
+three defects now gated there: address-taken imports missing from
+`ppcx_import_name`, an initial SP that left the loader's ABI frame outside the
+stack region, and canonical `blr`/`bctr` omitting `BO`/`BI` so the switch
+dispatch gate decremented CTR and shifted the target by one word; the tail
+scenario additionally gates the cross-range start fixpoint (pre-fixpoint
+analyzer → 14 failures, including the runtime exit 4 at `0x000100F0`).
 
 The native HLE contract test (`tests/hle/test_hle.c`, compiled with
-`cc -Wall -Wextra -Werror` in CI) covers the 13 modeled coreinit identity
-and memory/cache calls, exact-name matching, register preservation and the
-`OSBlockMove` overlap guarantee on a raw arena.
+`cc -Wall -Wextra -Werror` in CI) covers the 18 modeled calls (13 coreinit
+identity/memory/cache and five proc_ui lifecycle models), exact-name matching,
+register preservation and the `OSBlockMove` overlap guarantee on a raw arena.
 
 All tests use only synthetic instruction sequences, synthetic import tables
 and synthetic RPX fixtures; no game data is required.

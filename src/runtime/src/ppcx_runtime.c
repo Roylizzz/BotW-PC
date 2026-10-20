@@ -286,6 +286,7 @@ int ppcx_run(void) {
     Cpu cpu;
     const char *image;
     ppcx_runtime_init();
+    ppcx_hle_procui_reset();
     memset(&cpu, 0, sizeof(cpu));
     /*
      * Install the checked guest-memory model before anything runs: the

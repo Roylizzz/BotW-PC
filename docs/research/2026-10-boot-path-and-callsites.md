@@ -135,6 +135,19 @@ APIs?
      `GX2SetDRCEnable(1)`, `ProcUIDrawDoneRelease()`) when a state field
      equals 2.
 
+    Runtime note (2026-10-20): all five imported proc_ui functions are now
+    modeled in the HLE layer. The measured v208 sites are `ProcUIInit` at
+    `0x031FA4D4` (the entry that materializes `&UNK_031FA4C8`),
+    `ProcUIProcessMessages` at `0x031FAB88` (called with `block = 1`),
+    `ProcUIDrawDoneRelease` at `0x031FAB78`, `ProcUIShutdown` at
+    `0x031FAB9C`, and `ProcUIRegisterCallback` at `0x2E25A58`, `0x2E25A70`,
+    `0x2E25A88`, `0x3424F38`, `0x34ED708` and `0x34ED720` (phases 5, 1, 0,
+    0, 1 and one caller-supplied value). The headless model reports
+    `IN_FOREGROUND` while initialized, records the registrations without
+    invoking them, and reports `EXITING` after shutdown; it does not model
+    the HOME-menu transitions or the save callback, so this is lifecycle
+    bookkeeping, not full ProcUI behavior.
+
 9. **Interface tables are `$DATA`-relocated.** Class/interface tables in
    `.rodata` are `{code, 0}` arrays whose entries carry `R_PPC_ADDR32`
    relocations against `$TEXT`, and the *code* that points at them uses

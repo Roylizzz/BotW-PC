@@ -20,8 +20,9 @@ It provides:
 * diagnostics with full register context for untranslated instructions and
   unregistered targets,
 * the HLE entry point for imported system functions, with exact-name coreinit
-  core identity and flat-memory/cache models and explicit diagnostics for
-  everything else. This is not yet full Cafe OS or multi-core scheduling.
+  core identity/flat-memory/cache models, the proc_ui lifecycle and explicit
+  diagnostics for everything else. This is not yet full Cafe OS or multi-core
+  scheduling.
 
 ## Build (local prototype)
 
@@ -132,8 +133,8 @@ built.
 
 ## Implemented HLE subset (synthetic tests)
 
-Thirteen original, exact-name `coreinit` functions are implemented in
-`ppcx_hle.c`:
+Eighteen original, exact-name functions are implemented in `ppcx_hle.c`:
+thirteen `coreinit` calls and five `proc_ui` lifecycle calls.
 
 * **Core identity:** `OSGetCoreCount` (3), `OSGetCoreId` (1),
   `OSGetMainCoreId` (1), `OSIsMainCore` (true). The runtime's only guest CPU
@@ -147,27 +148,44 @@ Thirteen original, exact-name `coreinit` functions are implemented in
   `ppcx_dcbz`), `DCFlushRange` / `DCFlushRangeNoSync` / `DCInvalidateRange`
   (typed no-ops on the coherent arena that still validate their range;
   `DCFlushRange` runs a host fence) and `OSMemoryBarrier` (host fence).
+* **proc_ui lifecycle:** `ProcUIInit` (void; records a non-NULL save callback
+  and rejects NULL), `ProcUIProcessMessages` (returns 0
+  `IN_FOREGROUND` while initialized and 3 `EXITING` before init or after
+  shutdown), `ProcUIDrawDoneRelease` (counted no-op),
+  `ProcUIRegisterCallback` (void; records up to 16 `(type, fn, param,
+  priority)` registrations) and `ProcUIShutdown` (void; ends the lifecycle).
+  The headless model has no HOME menu, OS message pump or callback
+  execution: callbacks are recorded for diagnostics and never invoked, and
+  `block` is recorded but has no scheduling effect. The real API documents
+  the `block = false` return as undefined; this model still reports the
+  status so the behavior is deterministic. Signatures and status values were
+  checked against devkitPro/wut `proc_ui/procui.h`.
 
-All return values use r3 (PowerPC ABI). The memory services validate the
-whole range against the checked region map before touching memory, so a
-rejected operation has no partial effects and stops with the deterministic
-diagnostic and exit code 9. Zero-length ranges are no-ops and are never
-dereferenced. `OSBlockMove`'s documented overlap guarantee is implemented
-explicitly because the local TCC's `memmove` was measured to copy forward and
-corrupt an overlapping destination. Signatures and return contracts were
-checked against devkitPro/wut `coreinit/core.h`, `memory.h` and `cache.h`.
+Values returned to the guest use r3 (PowerPC ABI); the `proc_ui` void
+functions leave r3 untouched. The memory services validate the whole range
+against the checked region map before touching memory, so a rejected operation
+has no partial effects and stops with the deterministic diagnostic and exit
+code 9. Zero-length ranges are no-ops and are never dereferenced.
+`OSBlockMove`'s documented overlap guarantee is implemented explicitly
+because the local TCC's `memmove` was measured to copy forward and corrupt an
+overlapping destination. Signatures and return contracts were checked against
+devkitPro/wut `coreinit/core.h`, `memory.h`, `cache.h` and
+`proc_ui/procui.h`.
 
 The v208 import census gives the measured priority: `OSBlockMove` 6,834
 REL24 call sites (+2 address-taken), `coreinit.memcpy` 408 (+2),
 `OSMemoryBarrier` 330 (+2), `OSBlockSet` 295 (+2), `DCZeroRange` 119,
-`DCFlushRange` 77, `DCFlushRangeNoSync` 29, `DCInvalidateRange` 9 and
-`coreinit.memset` 84.
+`DCFlushRange` 77, `DCFlushRangeNoSync` 29, `DCInvalidateRange` 9,
+`coreinit.memset` 84, and the five `proc_ui` functions with 10 call sites
+total (`ProcUIRegisterCallback` 6, the other four 1 each). The six callback
+registration sites use phases 5, 1, 0, 0, 1 and one caller-supplied value;
+the model stores the raw numbers and does not interpret or invoke them.
 
-All other imports remain unimplemented, including `proc_ui.ProcUIInit`. In
-diagnostic mode they are counted but still return as no-ops (not a valid game
-execution path). Set `PPCX_HLE_STRICT=1` to stop on such calls. Exact
-module-qualified lookup means similarly named symbols in other modules cannot
-accidentally be considered implemented.
+All other imports remain unimplemented, including input, filesystem,
+threading and GX2. In diagnostic mode they are counted but still return as
+no-ops (not a valid game execution path). Set `PPCX_HLE_STRICT=1` to stop on
+such calls. Exact module-qualified lookup means similarly named symbols in
+other modules cannot accidentally be considered implemented.
 
 Run the synthetic native tests without game content:
 
@@ -177,14 +195,16 @@ cc -std=c11 -Wall -Wextra -Werror -I src/runtime/include src/runtime/src/ppcx_hl
 ```
 
 The contract test runs on a raw host arena (`ppcx_mem_active` is 0, with a
-stubbed checker). The compiled `tests/mem` harness links the same
-`ppcx_hle.c` with the real `ppcx_mem.c` and region map: it checks the copy,
-fill and block semantics and runs four extra child processes in which a
-read-only destination, an unmapped destination, an unmapped source and a
-read-only `DCZeroRange` block must each exit with code 9 and the exact
-diagnostic. The workflow runs both the contract test and `tests/mem` on every
-pull request. Do not count modeled identity or memory/cache calls as evidence
-of full Cafe OS compatibility.
+stubbed checker) and covers the 18 models, exact-name matching and register
+preservation, including the proc_ui lifecycle, callback table and re-init. The
+compiled `tests/mem` harness links the same `ppcx_hle.c` with the real
+`ppcx_mem.c` and region map: it checks the copy, fill and block semantics and
+runs four extra child processes in which a read-only destination, an unmapped
+destination, an unmapped source and a read-only `DCZeroRange` block must each
+exit with code 9 and the exact diagnostic. The workflow is manual-only; dispatch
+it from the Actions tab. It runs the HLE contract test, `tests/mem` and the
+compiled ISA/loader/boot harnesses. Do not count modeled identity, memory/cache
+or lifecycle calls as evidence of full Cafe OS compatibility.
 
 ## Synthetic boot fixture
 
@@ -192,14 +212,15 @@ of full Cafe OS compatibility.
 `ppcx_hle.c` and `ppcx_image.c`), a generated translation unit and a small
 driver, then boots a game-free RPX from `tests/boot/fixture.js` headless. The
 fixture exercises the real pipeline end to end — analysis, translation, load
-image, checked memory and HLE — in eight scenarios: modeled calls through a
+image, checked memory and HLE — in nine scenarios: modeled calls through a
 direct `bl` and through an address-taken import's dispatcher trampoline (with
 `PPCX_HLE_TRACE`/`PPCX_DISPATCH_TRACE` checkpoints), an unmodeled import in
 diagnostic mode, `PPCX_HLE_STRICT=1` (exit 5 with the register dump), a
 pointer-only getter, a cross-range tail `b` that must run the mid-body start
 the analysis discovered (`r3 = 2` only if the jump skips `addi r3,0,0x40`), a
 computed `bctr` inline-table switch that must dispatch through its `b` entry
-and return `r3 = 0x11`, an unmapped read (exit 9) and the same boot without
-`PPCX_IMAGE` (exit 9 at the first data read). Every stderr/stdout line and
-every guest-memory probe is compared with the authored expectations, and the
-boot run must repeat byte-identically.
+and return `r3 = 0x11`, the five modeled `proc_ui` lifecycle calls with a
+post-shutdown `EXITING` status (`r3 = 0x47`), an unmapped read (exit 9) and the
+same boot without `PPCX_IMAGE` (exit 9 at the first data read). Every
+stderr/stdout line and every guest-memory probe is compared with the authored
+expectations, and the boot run must repeat byte-identically.

@@ -7,15 +7,18 @@
  * complete little module in the shapes real RPX modules use:
  *
  *   - `.text` with the boot entry, a helper reached through a direct `bl`, a
- *     strict-mode entry that calls an unmodeled import (`proc_ui.ProcUIInit`)
- *     and a fault entry that reads an unmapped address, a constant getter
- *     that only a `.rodata` code pointer can reach, and a tail entry whose
- *     `b` crosses into the middle of another function's range (the mid-body
- *     entry point is discovered by the cross-range fixpoint);
+ *     strict-mode entry that calls an unmodeled import
+ *     (`coreinit.OSSleepTicks`), a fault entry that reads an unmapped address,
+ *     a constant getter that only a `.rodata` code pointer can reach, a tail
+ *     entry whose `b` crosses into the middle of another function's range (the
+ *     mid-body entry point is discovered by the cross-range fixpoint), and a
+ *     proc_ui lifecycle entry (init, callback registration, two message
+ *     pumps around DrawDoneRelease, shutdown and a post-shutdown pump);
  *   - two `.fimport_*` sections whose symbols the `.rela.text` sites
  *     reference (`coreinit.memcpy`, `coreinit.OSBlockMove`,
- *     `proc_ui.ProcUIInit`), with one REL24 call site per function and an
- *     ADDR16_HA/LO pair for the address-taken `OSBlockMove`;
+ *     `coreinit.OSSleepTicks` and all five imported `proc_ui` functions), with
+ *     one REL24 call site per function and an ADDR16_HA/LO pair for the
+ *     address-taken `OSBlockMove`;
  *   - `.rodata` with three `R_PPC_ADDR32` pointers (one with an addend) and
  *     two deferred TLS relocations (`R_PPC_DTPMOD32`/`R_PPC_DTPREL32`),
  *     `.data` with authored words and a NOBITS `.bss`;
@@ -29,11 +32,16 @@
  */
 
 const TEXT_ADDR = 0x00010000;
-const TEXT_SIZE = 0x00000184;
+const TEXT_SIZE = 0x000001e8;
 
 const SLOT_MEMCPY = 0x00020000;
 const SLOT_OSBLOCKMOVE = 0x00020008;
-const SLOT_PROCUIINIT = 0x00020010;
+const SLOT_OSLEEPTICKS = 0x00020010;
+const SLOT_PROCUIINIT = 0x00020020;
+const SLOT_PROCUIPROCESSMESSAGES = 0x00020028;
+const SLOT_PROCUIDRAWDONERELEASE = 0x00020030;
+const SLOT_PROCUIREGISTERCALLBACK = 0x00020038;
+const SLOT_PROCUISHUTDOWN = 0x00020040;
 
 const RODATA_ADDR = 0x00020100;
 const RODATA_SIZE = 0x20;
@@ -52,8 +60,13 @@ const SYM = {
     data_obj: 6,
     memcpy: 7,
     OSBlockMove: 8,
-    ProcUIInit: 9,
-    tls_value: 10,
+    OSSleepTicks: 9,
+    ProcUIInit: 10,
+    ProcUIProcessMessages: 11,
+    ProcUIDrawDoneRelease: 12,
+    ProcUIRegisterCallback: 13,
+    ProcUIShutdown: 14,
+    tls_value: 15,
 };
 
 /* Authored entry addresses the harness references. `tail` is booted; `split`
@@ -67,6 +80,7 @@ const ENTRY = {
     split: 0x000100e8,
     tail: 0x000100f8,
     switch: 0x00010118,
+    procui: 0x00010184,
 };
 
 /* Mid-body entry that only the cross-range `b` in `func_t` reaches. */
@@ -232,11 +246,11 @@ function buildText() {
     a.lwz(3, 3, 0);
     a.lwz(0, 1, 20).mtlr().addi(1, 1, 16).blr();
 
-    /* Strict-mode entry: calls an unmodeled import. */
+    /* Strict-mode entry: calls an unmodeled import (sleep needs a scheduler). */
     a.label("func_b");
     a.stwu(1, 1, -16).mflr().stw(0, 1, 20);
     a.addi(3, 0, 1);
-    a.blAbs(SLOT_PROCUIINIT, SYM.ProcUIInit);
+    a.blAbs(SLOT_OSLEEPTICKS, SYM.OSSleepTicks);
     a.lwz(0, 1, 20).mtlr().addi(1, 1, 16).blr();
 
     /* Fault entry: reads an address outside every mapped region. */
@@ -295,6 +309,32 @@ function buildText() {
     a.label("switch_case2");
     a.addi(3, 0, 0x33).lwz(0, 1, 20).mtlr().addi(1, 1, 16).blr();
 
+    /* proc_ui lifecycle entry: init with a non-NULL save callback, register
+     * one callback, pump messages twice around DrawDoneRelease, shut down and
+     * observe EXITING (3) on the next pump. The final addi turns that status
+     * into 0x47 so the harness proves the returned status, not just the call
+     * count. ProcUIInit/Register/DrawDone/Shutdown are void: r3 is only an
+     * input for them and the HLE trace shows it unchanged. */
+    a.label("func_p");
+    a.stwu(1, 1, -16).mflr().stw(0, 1, 20);
+    a.addis(3, 0, 0x0001).addi(3, 3, 0x0048); /* saveCallback = func_h */
+    a.blAbs(SLOT_PROCUIINIT, SYM.ProcUIInit);
+    a.addi(3, 0, 5); /* PROCUI_CALLBACK_HOME_BUTTON_DENIED */
+    a.addis(4, 0, 0x0001).addi(4, 4, 0x0048); /* callback = func_h */
+    a.addi(5, 0, 0); /* param */
+    a.addi(6, 0, 1); /* priority */
+    a.blAbs(SLOT_PROCUIREGISTERCALLBACK, SYM.ProcUIRegisterCallback);
+    a.addi(3, 0, 1);
+    a.blAbs(SLOT_PROCUIPROCESSMESSAGES, SYM.ProcUIProcessMessages);
+    a.blAbs(SLOT_PROCUIDRAWDONERELEASE, SYM.ProcUIDrawDoneRelease);
+    a.addi(3, 0, 1);
+    a.blAbs(SLOT_PROCUIPROCESSMESSAGES, SYM.ProcUIProcessMessages);
+    a.blAbs(SLOT_PROCUISHUTDOWN, SYM.ProcUIShutdown);
+    a.addi(3, 0, 1);
+    a.blAbs(SLOT_PROCUIPROCESSMESSAGES, SYM.ProcUIProcessMessages);
+    a.addi(3, 3, 0x44); /* EXITING (3) + 0x44 = 0x47 */
+    a.lwz(0, 1, 20).mtlr().addi(1, 1, 16).blr();
+
     return a.finish();
 }
 
@@ -327,6 +367,7 @@ function build() {
         split: labels.get("func_e"),
         tail: labels.get("func_t"),
         switch: labels.get("func_s"),
+        procui: labels.get("func_p"),
     };
     const tailTarget = labels.get("func_e_mid");
     if (tailTarget !== TAIL_TARGET) {
@@ -376,10 +417,17 @@ function build() {
         { name: "data_obj", value: DATA_ADDR, size: DATA_SIZE, info: 0x11, shndx: 5 },
         { name: "memcpy", value: SLOT_MEMCPY, size: 8, info: 0x12, shndx: 2 },
         { name: "OSBlockMove", value: SLOT_OSBLOCKMOVE, size: 8, info: 0x12, shndx: 2 },
+        { name: "OSSleepTicks", value: SLOT_OSLEEPTICKS, size: 8, info: 0x12, shndx: 2 },
         { name: "ProcUIInit", value: SLOT_PROCUIINIT, size: 8, info: 0x12, shndx: 3 },
+        { name: "ProcUIProcessMessages", value: SLOT_PROCUIPROCESSMESSAGES, size: 8, info: 0x12, shndx: 3 },
+        { name: "ProcUIDrawDoneRelease", value: SLOT_PROCUIDRAWDONERELEASE, size: 8, info: 0x12, shndx: 3 },
+        { name: "ProcUIRegisterCallback", value: SLOT_PROCUIREGISTERCALLBACK, size: 8, info: 0x12, shndx: 3 },
+        { name: "ProcUIShutdown", value: SLOT_PROCUISHUTDOWN, size: 8, info: 0x12, shndx: 3 },
         { name: "tls_value", value: BSS_ADDR, size: 4, info: 0x11, shndx: 6 },
         { name: "func_e", value: entries.split, size: 0x10, info: 0x12, shndx: 1 },
         { name: "func_t", value: entries.tail, size: 0x20, info: 0x12, shndx: 1 },
+        { name: "func_s", value: entries.switch, size: 0x6c, info: 0x12, shndx: 1 },
+        { name: "func_p", value: entries.procui, size: 0x64, info: 0x12, shndx: 1 },
     ];
     for (const s of symbolDefs) {
         if (s.name !== "") addString(s.name);
@@ -446,14 +494,14 @@ function build() {
     const sections = [
         { name: "", type: 0, flags: 0, addr: 0, data: Buffer.alloc(0), link: 0, info: 0, align: 0, entsize: 0 },
         { name: ".text", type: SECTION_TYPE.PROGBITS, flags: 0x6, addr: TEXT_ADDR, data: textBytes, link: 0, info: 0, align: 4 },
-        { name: ".fimport_coreinit", type: SECTION_TYPE.PROGBITS, flags: 0x2, addr: SLOT_MEMCPY, data: Buffer.alloc(16), link: 0, info: 0, align: 8 },
-        { name: ".fimport_proc_ui", type: SECTION_TYPE.PROGBITS, flags: 0x2, addr: SLOT_PROCUIINIT, data: Buffer.alloc(8), link: 0, info: 0, align: 8 },
+        { name: ".fimport_coreinit", type: SECTION_TYPE.PROGBITS, flags: 0x2, addr: SLOT_MEMCPY, data: Buffer.alloc(24), link: 0, info: 0, align: 8 },
+        { name: ".fimport_proc_ui", type: SECTION_TYPE.PROGBITS, flags: 0x2, addr: SLOT_PROCUIINIT, data: Buffer.alloc(40), link: 0, info: 0, align: 8 },
         { name: ".rodata", type: SECTION_TYPE.PROGBITS, flags: 0x3, addr: RODATA_ADDR, data: rodataBytes, link: 0, info: 0, align: 4 },
         { name: ".data", type: SECTION_TYPE.PROGBITS, flags: 0x3, addr: DATA_ADDR, data: dataBytes, link: 0, info: 0, align: 4 },
         { name: ".bss", type: SECTION_TYPE.NOBITS, flags: 0x3, addr: BSS_ADDR, data: Buffer.alloc(0), size: BSS_SIZE, link: 0, info: 0, align: 4 },
-        { name: ".shstrtab", type: SECTION_TYPE.STRTAB, flags: 0x2, addr: 0x00020400, data: shstrtab, link: 0, info: 0, align: 1 },
-        { name: ".symtab", type: SECTION_TYPE.SYMTAB, flags: 0x2, addr: 0x00020500, data: symtab, link: 9, info: 1, align: 4, entsize: 16 },
-        { name: ".strtab", type: SECTION_TYPE.STRTAB, flags: 0x2, addr: 0x00020600, data: strtab, link: 0, info: 0, align: 1 },
+        { name: ".shstrtab", type: SECTION_TYPE.STRTAB, flags: 0x2, addr: 0x00020700, data: shstrtab, link: 0, info: 0, align: 1 },
+        { name: ".symtab", type: SECTION_TYPE.SYMTAB, flags: 0x2, addr: 0x00020800, data: symtab, link: 9, info: 1, align: 4, entsize: 16 },
+        { name: ".strtab", type: SECTION_TYPE.STRTAB, flags: 0x2, addr: 0x00020a00, data: strtab, link: 0, info: 0, align: 1 },
         { name: ".rela.text", type: SECTION_TYPE.RELA, flags: 0, addr: 0, data: relaText, link: 8, info: 1, align: 4, entsize: 12 },
         { name: ".rela.rodata", type: SECTION_TYPE.RELA, flags: 0, addr: 0, data: relaRoData, link: 8, info: 4, align: 4, entsize: 12 },
         { name: ".comment", type: SECTION_TYPE.PROGBITS, flags: 0, addr: 0, data: Buffer.from("#synthetic-boot\n\0", "ascii"), link: 0, info: 0, align: 1 },
@@ -522,14 +570,23 @@ function build() {
         buf,
         layout: { shoff, sections: placed.length },
         entries,
-        slots: { memcpy: SLOT_MEMCPY, OSBlockMove: SLOT_OSBLOCKMOVE, ProcUIInit: SLOT_PROCUIINIT },
+        slots: {
+            memcpy: SLOT_MEMCPY,
+            OSBlockMove: SLOT_OSBLOCKMOVE,
+            OSSleepTicks: SLOT_OSLEEPTICKS,
+            ProcUIInit: SLOT_PROCUIINIT,
+            ProcUIProcessMessages: SLOT_PROCUIPROCESSMESSAGES,
+            ProcUIDrawDoneRelease: SLOT_PROCUIDRAWDONERELEASE,
+            ProcUIRegisterCallback: SLOT_PROCUIREGISTERCALLBACK,
+            ProcUIShutdown: SLOT_PROCUISHUTDOWN,
+        },
         expected: {
             entry: ENTRY,
             text: { addr: TEXT_ADDR, size: TEXT_SIZE },
             rodata: { addr: RODATA_ADDR, size: RODATA_SIZE },
             data: { addr: DATA_ADDR, size: DATA_SIZE },
             bss: { addr: BSS_ADDR, size: BSS_SIZE },
-            functionStarts: [ENTRY.boot, ENTRY.helper, ENTRY.strict, ENTRY.fault, ENTRY.split, ENTRY.tail, ENTRY.switch],
+            functionStarts: [ENTRY.boot, ENTRY.helper, ENTRY.strict, ENTRY.fault, ENTRY.split, ENTRY.tail, ENTRY.switch, ENTRY.procui],
             pointerStarts: [ENTRY.pointer],
             tableStarts: [ENTRY.switch + 0x24, ENTRY.switch + 0x28, ENTRY.switch + 0x2c],
             tailStarts: [TAIL_TARGET, ENTRY.switch + 0x30, ENTRY.switch + 0x44, ENTRY.switch + 0x58],
@@ -559,4 +616,17 @@ function build() {
     };
 }
 
-module.exports = { build, ENTRY, TAIL_TARGET, TEXT_ADDR, SLOT_MEMCPY, SLOT_OSBLOCKMOVE, SLOT_PROCUIINIT };
+module.exports = {
+    build,
+    ENTRY,
+    TAIL_TARGET,
+    TEXT_ADDR,
+    SLOT_MEMCPY,
+    SLOT_OSBLOCKMOVE,
+    SLOT_OSLEEPTICKS,
+    SLOT_PROCUIINIT,
+    SLOT_PROCUIPROCESSMESSAGES,
+    SLOT_PROCUIDRAWDONERELEASE,
+    SLOT_PROCUIREGISTERCALLBACK,
+    SLOT_PROCUISHUTDOWN,
+};
