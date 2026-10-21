@@ -73,7 +73,9 @@ function asSet(v, fallback) {
  *   emitSet    Set of addresses that will have bodies in this translation
  *              unit (calls to those become direct C calls)
  *   callSite   Map: instruction address -> import index (REL24 sites)
- *   dataSite   Map: relocation offset (instruction + 2) -> { index, type }
+ *   dataSite   Map: relocation offset (instruction + 2) -> { index, type, kind }
+ *              kind selects the function trampoline (function) or the GHS
+ *              data address table (data)
  */
 function translateFunction(opts) {
     const {
@@ -151,7 +153,43 @@ function translateFunction(opts) {
     const immHex = (ins) => u32hex(ins.imm);
     /* cmpli takes its immediate as an unsigned halfword. */
     const uimmHex = (ins) => `0x${(ins.uimm >>> 0).toString(16)}u`;
-    const dEA = (ins) => (ins.ra === 0 ? immHex(ins) : `(u32)(${g(ins.ra)} + ${immHex(ins)})`);
+
+    /* Address-taken imports are runtime dependencies too: the unit mentions
+     * their index and the dispatcher (functions) or the GHS data table
+     * (data) resolves it at run time. */
+    const noteImportAddr = (index) => {
+        if (!importAddrs.includes(index)) importAddrs.push(index);
+    };
+    const importAddrExpr = (site) => {
+        noteImportAddr(site.index);
+        return site.kind === "data"
+            ? `PPCX_IMPORT_DATA_ADDR(${site.index})`
+            : `PPCX_IMPORT_ADDR(${site.index})`;
+    };
+    const addr16Value = (site) => {
+        const imp = importAddrExpr(site);
+        if (site.type === 6) return `(${imp} + 0x8000u) & 0xffff0000u`;
+        if (site.type === 5) return `(u32)(${imp} >> 16) << 16`;
+        /* ADDR16_LO is a signed D-form displacement: 0x8000 is -32768, not
+         * +32768. The addis half already carries the +0x8000 rounding. */
+        if (site.type === 4) return `(u32)(s32)(s16)(${imp} & 0xffffu)`;
+        return null;
+    };
+
+    /* D-form loads and stores can carry R_PPC_ADDR16_LO on their displacement,
+     * not only addi. This is the form used by coreinit.__gh_FOPEN_MAX
+     * (addis + lhz), so a translator that only patches addi would read the
+     * stale link-time address. */
+    const dEA = (ins) => {
+        const site = dataSite.get(ins.addr + 2);
+        let imm = immHex(ins);
+        if (site && site.type === 4) {
+            imm = addr16Value(site);
+        } else if (site) {
+            warnings.push(`unexpected relocation type ${site.type} on ${ins.name} at 0x${hex8(ins.addr)}`);
+        }
+        return ins.ra === 0 ? imm : `(u32)(${g(ins.ra)} + ${imm})`;
+    };
     const xEA = (ins) => (ins.ra === 0 ? g(ins.rb) : `(u32)(${g(ins.ra)} + ${g(ins.rb)})`);
 
     function loadExpr(access, ea, reg) {
@@ -503,22 +541,13 @@ function translateFunction(opts) {
                 const site = dataSite.get(ins.addr + 2);
                 let value = ins.name === "addi" ? immHex(ins) : u32hex(ins.imm << 16);
                 if (site) {
-                    const imp = `PPCX_IMPORT_ADDR(${site.index})`;
-                    /* Address-taken imports are runtime dependencies too: the
-                     * unit mentions their index and the dispatcher trampoline
-                     * resolves it through ppcx_import_name at run time. */
-                    const noteImportAddr = () => {
-                        if (!importAddrs.includes(site.index)) importAddrs.push(site.index);
-                    };
-                    if (site.type === 6 && ins.name === "addis") {
-                        value = `(${imp} + 0x8000u) & 0xffff0000u`;
-                        noteImportAddr();
-                    } else if (site.type === 4 && ins.name === "addi") {
-                        value = `(u32)(s32)(${imp} & 0xffffu)`;
-                        noteImportAddr();
-                    } else if (site.type === 5 && ins.name === "addis") {
-                        value = `(u32)(${imp} >> 16) << 16`;
-                        noteImportAddr();
+                    const siteValue = addr16Value(site);
+                    const valid =
+                        siteValue !== null &&
+                        (((site.type === 6 || site.type === 5) && ins.name === "addis") ||
+                            (site.type === 4 && ins.name === "addi"));
+                    if (valid) {
+                        value = siteValue;
                     } else {
                         warnings.push(`unexpected relocation type ${site.type} on ${ins.name} at 0x${hex8(ins.addr)}`);
                     }

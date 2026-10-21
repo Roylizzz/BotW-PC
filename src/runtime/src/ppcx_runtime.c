@@ -279,6 +279,17 @@ u32 ppcx_import_addr(u32 import_index) {
     return PPCX_HLE_TRAMPOLINE_BASE + import_index * PPCX_HLE_TRAMPOLINE_STRIDE;
 }
 
+u32 ppcx_import_data_addr(u32 import_index) {
+    const char *name = ppcx_import_name(import_index);
+    u32 addr = ppcx_hle_data_addr(name);
+    if (addr == 0u) {
+        fprintf(stderr, "ppcx: unmodeled data import %s (import %u)\n",
+                name != NULL ? name : "unknown-import", (unsigned)import_index);
+        exit(7);
+    }
+    return addr;
+}
+
 unsigned ppcx_hle_call_count(void) {
     return g_hle_calls;
 }
@@ -302,11 +313,12 @@ int ppcx_run(void) {
     ppcx_mem_set_fault_hook(ppcx_mem_fault_dump);
     ppcx_mem_reset(PPCX_INITIAL_STACK, PPCX_STACK_BYTES);
     /*
-     * Reserve the one guest page that backs HLE data returned to the game:
-     * the OSSystemInfo record at the base and the deterministic single-thread
-     * TLS block above it. It sits below the loaded image and the stack; a
-     * module that maps that address is rejected instead of silently aliasing
-     * it.
+     * Reserve the guest pages that back HLE data returned to the game:
+     * the OSSystemInfo record and the deterministic single-thread TLS block
+     * in the first page, then the GHS stdio data (__gh_FOPEN_MAX and _iob)
+     * in the adjacent page. They sit below the loaded image and the stack; a
+     * module that maps those addresses is rejected instead of silently
+     * aliasing them.
      */
     if (ppcx_mem_add_perm(PPCX_HLE_DATA_ADDR, PPCX_HLE_DATA_SIZE, "hle-data",
                           PPCX_MEM_WRITE) != 0) {
@@ -314,7 +326,14 @@ int ppcx_run(void) {
                 (unsigned)PPCX_HLE_DATA_ADDR);
         return 8;
     }
+    if (ppcx_mem_add_perm(PPCX_GHS_DATA_ADDR, PPCX_GHS_DATA_SIZE, "ghs-data",
+                          PPCX_MEM_WRITE) != 0) {
+        fprintf(stderr, "ppcx: cannot map the GHS data page at 0x%08X\n",
+                (unsigned)PPCX_GHS_DATA_ADDR);
+        return 8;
+    }
     ppcx_hle_tls_reset();
+    ppcx_hle_ghs_reset();
     /*
      * Optional RPX load image (build/ppcx/image.bin, written by
      * `tools/ppcx image`): maps .rodata/.data/.bss so translated code can

@@ -32,7 +32,7 @@
  */
 
 const TEXT_ADDR = 0x00010000;
-const TEXT_SIZE = 0x000001e8;
+const TEXT_SIZE = 0x0000021c;
 
 const SLOT_MEMCPY = 0x00020000;
 const SLOT_OSBLOCKMOVE = 0x00020008;
@@ -42,6 +42,13 @@ const SLOT_PROCUIPROCESSMESSAGES = 0x00020028;
 const SLOT_PROCUIDRAWDONERELEASE = 0x00020030;
 const SLOT_PROCUIREGISTERCALLBACK = 0x00020038;
 const SLOT_PROCUISHUTDOWN = 0x00020040;
+const SLOT_GH_FOPEN_MAX = 0x00020050;
+const SLOT_IOB = 0x00020058;
+
+/* Runtime-owned data addresses, identical to ppcx_hle.h. The fixture probes
+ * them after boot to prove the translator used the data table. */
+const GHS_FOPEN_MAX_ADDR = 0x00091000;
+const GHS_IOB_ADDR = 0x00091100;
 
 const RODATA_ADDR = 0x00020100;
 const RODATA_SIZE = 0x20;
@@ -67,6 +74,8 @@ const SYM = {
     ProcUIRegisterCallback: 13,
     ProcUIShutdown: 14,
     tls_value: 15,
+    __gh_FOPEN_MAX: 20,
+    _iob: 21,
 };
 
 /* Authored entry addresses the harness references. `tail` is booted; `split`
@@ -81,6 +90,7 @@ const ENTRY = {
     tail: 0x000100f8,
     switch: 0x00010118,
     procui: 0x00010184,
+    data: 0x000101e8,
 };
 
 /* Mid-body entry that only the cross-range `b` in `func_t` reaches. */
@@ -135,6 +145,9 @@ function assemble() {
         },
         lwz(rt, ra, d) {
             return api.word(((32 << 26) | (rt << 21) | (ra << 16) | (d & 0xffff)) >>> 0);
+        },
+        lhz(rt, ra, d) {
+            return api.word(((40 << 26) | (rt << 21) | (ra << 16) | (d & 0xffff)) >>> 0);
         },
         stw(rs, ra, d) {
             return api.word(((36 << 26) | (rs << 21) | (ra << 16) | (d & 0xffff)) >>> 0);
@@ -195,6 +208,13 @@ function assemble() {
         addiImport(rt, symIndex) {
             const site = here();
             api.addi(rt, rt, 0);
+            relocs.push({ offset: (site + 2) >>> 0, type: 4, sym: symIndex, addend: 0 });
+            return api;
+        },
+        /* ADDR16_LO on a real D-form load displacement, not on addi. */
+        lhzImport(rt, symIndex) {
+            const site = here();
+            api.lhz(rt, rt, 0);
             relocs.push({ offset: (site + 2) >>> 0, type: 4, sym: symIndex, addend: 0 });
             return api;
         },
@@ -335,6 +355,17 @@ function buildText() {
     a.addi(3, 3, 0x44); /* EXITING (3) + 0x44 = 0x47 */
     a.lwz(0, 1, 20).mtlr().addi(1, 1, 16).blr();
 
+    /* Data-import entry: __gh_FOPEN_MAX is loaded through an addis + lhz
+     * pair (the LO relocation is on the load displacement), and _iob through
+     * addis + addi. It returns FOPEN_MAX + _iob[0].info = 20 + 4 = 0x18. */
+    a.label("func_i");
+    a.stwu(1, 1, -16).mflr().stw(0, 1, 20);
+    a.addisImport(3, SYM.__gh_FOPEN_MAX).lhzImport(3, SYM.__gh_FOPEN_MAX);
+    a.addisImport(4, SYM._iob).addiImport(4, SYM._iob);
+    a.lwz(6, 4, 0x0c);
+    a.add(3, 3, 6);
+    a.lwz(0, 1, 20).mtlr().addi(1, 1, 16).blr();
+
     return a.finish();
 }
 
@@ -368,6 +399,7 @@ function build() {
         tail: labels.get("func_t"),
         switch: labels.get("func_s"),
         procui: labels.get("func_p"),
+        data: labels.get("func_i"),
     };
     const tailTarget = labels.get("func_e_mid");
     if (tailTarget !== TAIL_TARGET) {
@@ -428,6 +460,9 @@ function build() {
         { name: "func_t", value: entries.tail, size: 0x20, info: 0x12, shndx: 1 },
         { name: "func_s", value: entries.switch, size: 0x6c, info: 0x12, shndx: 1 },
         { name: "func_p", value: entries.procui, size: 0x64, info: 0x12, shndx: 1 },
+        { name: "__gh_FOPEN_MAX", value: SLOT_GH_FOPEN_MAX, size: 2, info: 0x11, shndx: 13 },
+        { name: "_iob", value: SLOT_IOB, size: 0x140, info: 0x11, shndx: 13 },
+        { name: "func_i", value: entries.data, size: 0x34, info: 0x12, shndx: 1 },
     ];
     for (const s of symbolDefs) {
         if (s.name !== "") addString(s.name);
@@ -482,6 +517,7 @@ function build() {
         ".rela.text",
         ".rela.rodata",
         ".comment",
+        ".dimport_coreinit",
     ];
     const shstrtab = Buffer.from("\0" + shstrNames.slice(1).join("\0") + "\0", "ascii");
     const shstrOffset = (name) => {
@@ -505,6 +541,7 @@ function build() {
         { name: ".rela.text", type: SECTION_TYPE.RELA, flags: 0, addr: 0, data: relaText, link: 8, info: 1, align: 4, entsize: 12 },
         { name: ".rela.rodata", type: SECTION_TYPE.RELA, flags: 0, addr: 0, data: relaRoData, link: 8, info: 4, align: 4, entsize: 12 },
         { name: ".comment", type: SECTION_TYPE.PROGBITS, flags: 0, addr: 0, data: Buffer.from("#synthetic-boot\n\0", "ascii"), link: 0, info: 0, align: 1 },
+        { name: ".dimport_coreinit", type: SECTION_TYPE.PROGBITS, flags: 0x2, addr: SLOT_GH_FOPEN_MAX, data: Buffer.alloc(16), link: 0, info: 0, align: 8 },
     ];
 
     /* File layout: header, section payloads, then the section header table. */
@@ -586,7 +623,7 @@ function build() {
             rodata: { addr: RODATA_ADDR, size: RODATA_SIZE },
             data: { addr: DATA_ADDR, size: DATA_SIZE },
             bss: { addr: BSS_ADDR, size: BSS_SIZE },
-            functionStarts: [ENTRY.boot, ENTRY.helper, ENTRY.strict, ENTRY.fault, ENTRY.split, ENTRY.tail, ENTRY.switch, ENTRY.procui],
+            functionStarts: [ENTRY.boot, ENTRY.helper, ENTRY.strict, ENTRY.fault, ENTRY.split, ENTRY.tail, ENTRY.switch, ENTRY.procui, ENTRY.data],
             pointerStarts: [ENTRY.pointer],
             tableStarts: [ENTRY.switch + 0x24, ENTRY.switch + 0x28, ENTRY.switch + 0x2c],
             tailStarts: [TAIL_TARGET, ENTRY.switch + 0x30, ENTRY.switch + 0x44, ENTRY.switch + 0x58],
@@ -612,6 +649,10 @@ function build() {
                 { name: "data-2", addr: DATA_ADDR + 0x08, value: 0xaabbccdd },
                 { name: "bss-0", addr: BSS_ADDR + 0x00, value: 0x00000000 },
                 { name: "bss-16", addr: BSS_ADDR + 0x10, value: 0x00000000 },
+                { name: "hle-fopen-max", addr: GHS_FOPEN_MAX_ADDR, width: 16, value: 20 },
+                { name: "hle-iob-stdin", addr: GHS_IOB_ADDR + 0x00c, value: 0x00000004 },
+                { name: "hle-iob-stdout", addr: GHS_IOB_ADDR + 0x01c, value: 0x00040002 },
+                { name: "hle-iob-stderr", addr: GHS_IOB_ADDR + 0x02c, value: 0x00080002 },
             ],
         },
     };

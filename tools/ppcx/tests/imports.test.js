@@ -71,5 +71,7 @@ test("builds call-site and data-site maps", () => {
     const shutdown = imports.find((i) => i.name === "GX2Shutdown");
     assert.equal(dataSite.get(0x02000108).index, shutdown.index);
     assert.equal(dataSite.get(0x02000108).type, 6);
+    assert.equal(dataSite.get(0x02000108).kind, "function");
     assert.equal(dataSite.get(0x0200010a).type, 4);
+    assert.equal(dataSite.get(0x0200010a).kind, "function");
 });

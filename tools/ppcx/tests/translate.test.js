@@ -106,17 +106,35 @@ test("a cross-range `b` to a start outside the unit dispatches at run time", () 
     assert.deepEqual([...r.externalTargets], [0x1100]);
 });
 
-test("substitutes address-taken imports (HA/LO pair)", () => {
+test("substitutes address-taken function imports (HA/LO pair)", () => {
     const dataSite = new Map([
-        [0x2002, { index: 3, type: 6 }],
-        [0x2006, { index: 3, type: 4 }],
+        [0x2002, { index: 3, type: 6, kind: "function" }],
+        [0x2006, { index: 3, type: 4, kind: "function" }],
     ]);
     const r = translate([0x3c600000, 0x38630000, 0x4e800020], { base: 0x2000, dataSite });
     assert.match(r.code, /c->gpr\[3\] = \(PPCX_IMPORT_ADDR\(3\) \+ 0x8000u\) & 0xffff0000u;/);
-    assert.match(r.code, /c->gpr\[3\] = c->gpr\[3\] \+ \(u32\)\(s32\)\(PPCX_IMPORT_ADDR\(3\) & 0xffffu\);/);
+    assert.match(r.code, /c->gpr\[3\] = c->gpr\[3\] \+ \(u32\)\(s32\)\(s16\)\(PPCX_IMPORT_ADDR\(3\) & 0xffffu\);/);
     /* The HA/LO pair is one runtime dependency, not two. */
     assert.deepEqual(r.importAddrs, [3]);
     assert.deepEqual(r.hleCalls, []);
+});
+
+test("data imports resolve to storage, including an ADDR16_LO on lhz", () => {
+    /* addis r3,0,0 ; lhz r3,0(r3) ; blr. __gh_FOPEN_MAX uses exactly this
+     * shape, so the LO relocation is on the load displacement. */
+    const lhz = (40 << 26) | (3 << 21) | (3 << 16) | 0;
+    const dataSite = new Map([
+        [0x3002, { index: 7, type: 6, kind: "data" }],
+        [0x3006, { index: 7, type: 4, kind: "data" }],
+    ]);
+    const r = translate([0x3c600000, lhz, 0x4e800020], { base: 0x3000, dataSite });
+    assert.match(r.code, /c->gpr\[3\] = \(PPCX_IMPORT_DATA_ADDR\(7\) \+ 0x8000u\) & 0xffff0000u;/);
+    assert.match(
+        r.code,
+        /c->gpr\[3\] = ppcx_rd16\(\(u32\)\(c->gpr\[3\] \+ \(u32\)\(s32\)\(s16\)\(PPCX_IMPORT_DATA_ADDR\(7\) & 0xffffu\)\)\);/
+    );
+    assert.deepEqual(r.importAddrs, [7]);
+    assert.deepEqual(r.warnings, []);
 });
 
 test("translates psq loads and stores with the displacement EA", () => {

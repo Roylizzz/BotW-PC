@@ -639,6 +639,63 @@ static int test_tls_model(void) {
     return 0;
 }
 
+static int test_ghs_data_model(void) {
+    static const u32 info[3] = { 0x00000004u, 0x00040002u, 0x00080002u };
+    u32 i;
+    u32 j;
+
+    memset(arena + PPCX_GHS_DATA_ADDR, 0xaa, PPCX_GHS_DATA_SIZE);
+    ppcx_hle_ghs_reset();
+
+    if (ppcx_hle_data_addr("coreinit.__gh_FOPEN_MAX") != PPCX_GH_FOPEN_MAX_ADDR) {
+        return fail("__gh_FOPEN_MAX data address");
+    }
+    if (ppcx_hle_data_addr("coreinit._iob") != PPCX_GHS_IOB_ADDR) {
+        return fail("_iob data address");
+    }
+    if (ppcx_hle_data_addr("coreinit._iob_lock") != 0u ||
+        ppcx_hle_data_addr("coreinit._iobX") != 0u ||
+        ppcx_hle_data_addr("other._iob") != 0u ||
+        ppcx_hle_data_addr(NULL) != 0u) {
+        return fail("unmodeled data import accepted");
+    }
+
+    if (ppcx_rd16(PPCX_GH_FOPEN_MAX_ADDR) != PPCX_GH_FOPEN_MAX) {
+        return fail("__gh_FOPEN_MAX value");
+    }
+    for (i = 0; i < PPCX_GHS_IOB_COUNT; i++) {
+        u32 base = PPCX_GHS_IOB_ADDR + i * PPCX_GHS_IOBUF_SIZE;
+        for (j = 0; j < PPCX_GHS_IOBUF_SIZE; j += 4u) {
+            u32 got = ppcx_rd32(base + j);
+            u32 want = (i < 3u && j == PPCX_GHS_IOB_INFO_OFFSET) ? info[i] : 0u;
+            if (got != want) {
+                fprintf(stderr, "hle: _iob[%u]+0x%02X = 0x%08X, expected 0x%08X\n",
+                        (unsigned)i, (unsigned)j, (unsigned)got, (unsigned)want);
+                return 1;
+            }
+        }
+    }
+
+    /* Reset restores the whole page, not only the fields read above. */
+    ppcx_wr16(PPCX_GH_FOPEN_MAX_ADDR, 0xffffu);
+    ppcx_wr32(PPCX_GHS_IOB_ADDR, 0xdeadbeefu);
+    memset(arena + PPCX_GHS_DATA_ADDR + 0x800, 0xaa, 0x10);
+    ppcx_hle_ghs_reset();
+    if (ppcx_rd16(PPCX_GH_FOPEN_MAX_ADDR) != PPCX_GH_FOPEN_MAX) {
+        return fail("GHS reset did not restore FOPEN_MAX");
+    }
+    if (ppcx_rd32(PPCX_GHS_IOB_ADDR) != 0u ||
+        ppcx_rd32(PPCX_GHS_IOB_ADDR + PPCX_GHS_IOB_INFO_OFFSET) != info[0]) {
+        return fail("GHS reset did not restore _iob");
+    }
+    for (i = 0; i < 0x10u; i++) {
+        if (arena[PPCX_GHS_DATA_ADDR + 0x800 + i] != 0u) {
+            return fail("GHS reset did not clear the data page");
+        }
+    }
+    return 0;
+}
+
 static int test_input_models(void) {
     static const char *const gyro_noops[] = {
         "vpad.VPADEnableGyroAccRevise",
@@ -994,8 +1051,9 @@ int main(void) {
     if (test_procui_lifecycle() != 0) return 1;
     if (test_clock_models() != 0) return 1;
     if (test_tls_model() != 0) return 1;
+    if (test_ghs_data_model() != 0) return 1;
     if (test_input_models() != 0) return 1;
     if (test_exact_names() != 0) return 1;
-    puts("hle: core identity, memory/cache, proc_ui lifecycle, virtual clock/system info, TLS and input models, exact matching and register preservation OK");
+    puts("hle: core identity, memory/cache, proc_ui lifecycle, virtual clock/system info, TLS, GHS data and input models, exact matching and register preservation OK");
     return 0;
 }

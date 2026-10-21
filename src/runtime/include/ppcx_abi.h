@@ -953,6 +953,11 @@ extern void ppcx_hle_call(Cpu *c, u32 import_index);
  * when its address is taken by the game. */
 extern u32 ppcx_import_addr(u32 import_index);
 
+/* Guest address of the storage that represents an imported data object.
+ * Function trampolines are executable pseudo-addresses and are invalid as
+ * data pointers, so data imports use this separate resolver. */
+extern u32 ppcx_import_data_addr(u32 import_index);
+
 /* Indirect branch target resolution (bctr/bclr and friends). */
 extern void ppcx_dispatch(Cpu *c, u32 target);
 
@@ -971,6 +976,7 @@ extern void ppcx_trace_enter(u32 addr);
 
 #define PPCX_HLE(c, idx) ppcx_hle_call((c), (idx))
 #define PPCX_IMPORT_ADDR(idx) ppcx_import_addr((idx))
+#define PPCX_IMPORT_DATA_ADDR(idx) ppcx_import_data_addr((idx))
 #define PPCX_DISPATCH(c, target) ppcx_dispatch((c), (target))
 #define PPCX_UNIMPL(c, addr) ppcx_unimpl((c), (addr))
 #define PPCX_CALL_UNKNOWN(c, target) ppcx_call_unknown((c), (target))

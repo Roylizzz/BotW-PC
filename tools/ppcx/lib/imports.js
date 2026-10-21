@@ -103,14 +103,21 @@ function collectImports(parsed, symbols, relocations) {
 /**
  * Maps used by the translator:
  *   callSite -> import index    (REL24 sites)
- *   dataSite -> import index    (ADDR16 sites)
+ *   dataSite -> { index, type, kind } (ADDR16 sites)
+ *
+ * `kind` is essential: a function import is addressable through a dispatcher
+ * trampoline, while a data import must resolve to the storage address that
+ * coreinit supplies. The translator must never route a data import through
+ * the function trampoline.
  */
 function buildImportMaps(imports) {
     const callSite = new Map();
     const dataSite = new Map();
     for (const im of imports) {
         for (const off of im.callSites) callSite.set(off, im.index);
-        for (const a of im.addrSites) dataSite.set(a.offset, { index: im.index, type: a.type });
+        for (const a of im.addrSites) {
+            dataSite.set(a.offset, { index: im.index, type: a.type, kind: im.kind });
+        }
     }
     return { callSite, dataSite };
 }

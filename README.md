@@ -17,7 +17,8 @@ of the Wild* — with the long-term goal of running it natively on PC.
 > deterministically with exit code 9 instead of reading unrelated bytes),
 > a minimal exact-name HLE registry for 41 calls — 18 coreinit identity,
 > flat-memory/cache, clock, system-info and TLS services, the 5 proc_ui
-> lifecycle functions and 18 headless input calls — with
+> lifecycle functions and 18 headless input calls — plus deterministic GHS
+> `__gh_FOPEN_MAX`/`_iob` data imports, with
 > strict unknown-call handling, and a
 > synthetic headless boot fixture (`tests/boot`) that runs a game-free RPX
 > through the whole pipeline with stable trace and memory checkpoints. See

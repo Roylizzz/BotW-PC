@@ -85,8 +85,10 @@ first GX2 frame?
    8 data). 16,682 REL24 sites split into **16,522 `bl` calls and 160 `b`
    tail calls** (tail modules: coreinit 99, gx2 46, snd_core 9, padscore 5,
    proc_ui 1). 40 ADDR16 address-taken sites, all coreinit (heap function
-   pointers, `_iob`, callback registrations). The loader's patch mechanics
-   are visible in the file: REL24 fields hold placeholders (the sampled
+   pointers, `_iob`, callback registrations). Two of the eight data imports
+   are modeled as of 2026-10-21 (`__gh_FOPEN_MAX` and `_iob`); the six heap
+   and C++ exception/atexit pointers remain unmodeled. The loader's patch
+   mechanics are visible in the file: REL24 fields hold placeholders (the sampled
    site stored a branch outside `.text`), the relocation entry is the
    authoritative target; internal references are pre-linked and need no
    substitution.
@@ -162,10 +164,11 @@ first GX2 frame?
    `baseTime` = epoch, zero reserved bytes). `OSTicksToCalendarTime` writes
    the ten 0x28-byte `OSCalendarTime` fields in UTC and clamps negative
    inputs to 2000-01-01; `OSSleepTicks` (7 sites) remains unmodeled because
-   it needs a scheduler. `tests/hle` now covers 41 models, including the
-   64-bit `r3:r4` returns, the system-info and calendar layouts, TLS
-   resolution and reset; `tests/mem` verifies the record and the TLS cases
-   through the real region map (36 positive HLE lines). Two real v208 paths run under strict mode with the same
+   it needs a scheduler. `tests/hle` now covers 41 models plus the GHS stdio
+   data slots, including the 64-bit `r3:r4` returns, the system-info and
+   calendar layouts, TLS resolution/reset and the `__gh_FOPEN_MAX`/`_iob`
+   values; `tests/mem` verifies the records, TLS and GHS data through the real
+   region map (45 positive HLE lines plus five HLE fault cases). Two real v208 paths run under strict mode with the same
    image: `0x030CB524` (11 instructions, only `OSGetSystemInfo`) prints
    `r3=0x00090000` and exits 0; its disassembly computes
    `busClockSpeed / 4 = 62,156,250` in r4 after zeroing r3, so the result is
@@ -247,16 +250,19 @@ first GX2 frame?
    `loader: 62 state lines, 10 negative blobs, read-only write fault … loader: OK`.
 
    The synthetic boot fixture (`tests/boot`) closes the loop from authored
-   RPX bytes to a booted guest. It builds a game-free RPX (nine functions
-   plus an inline three-entry `b`-table and three case bodies, eight imports —
+   RPX bytes to a booted guest. It builds a game-free RPX (ten functions
+   plus an inline three-entry `b`-table and three case bodies, ten imports —
    `coreinit.memcpy` called directly, `OSBlockMove` taken by address,
-   `coreinit.OSSleepTicks` left unmodeled, and all five proc_ui lifecycle
-   calls — three relocated `.rodata` pointers with one addend, two applied
+   `coreinit.OSSleepTicks` left unmodeled, all five proc_ui lifecycle calls,
+   and the `__gh_FOPEN_MAX`/`_iob` data slots — three relocated `.rodata`
+   pointers with one addend, two applied
    TLS sites, `.data`/`.bss` and the allocated metadata trio), runs the real
    `analyze` → `translateModule` → `buildImage` pipeline and compiles the
-   result with the real runtime, checked-memory model and HLE layer. Nine
+   result with the real runtime, checked-memory model and HLE layer. Ten
    scenarios compare every stderr/stdout line: a boot with
-   `PPCX_HLE_TRACE`/`PPCX_DISPATCH_TRACE` checkpoints, an unmodeled import
+   `PPCX_HLE_TRACE`/`PPCX_DISPATCH_TRACE` checkpoints, a data-import entry
+   using `addis` + `lhz` for `__gh_FOPEN_MAX` and `addis` + `addi` for
+   `_iob` (`r3 = 0x18`), an unmodeled import
    tolerated as a counted no-op, strict mode (exit 5 + register dump), a
    pointer-only getter, a cross-range tail `b` that runs a mid-body entry
    point discovered by the analysis (it lands after `addi r3,0,0x40`, so the
@@ -266,14 +272,15 @@ first GX2 frame?
    proc_ui lifecycle calls ending with a post-shutdown `EXITING` status
    (`r3 = 0x47`), a read outside every region (exit 9) and the same boot
    without `PPCX_IMAGE` (fault at the first data read instead of zeroes);
-   guest probes assert the applied relocations, the resolved TLS index and
-   the two copied words in `.data`/`.bss`, and the boot run must repeat
-   byte-identically. `node tests/boot/run.js` → `boot: 9 scenarios (7 entries
-   compiled), 50 transcript lines, 72 memory probe lines … boot: OK, the
-   synthetic RPX boots headless with stable checkpoints` (TCC 0.9.27, proc_ui
-   scenario added 2026-10-20).
+   guest probes assert the applied relocations, the resolved TLS index, the
+   GHS `__gh_FOPEN_MAX`/`_iob` values and the two copied words in
+   `.data`/`.bss`, and the boot run must repeat byte-identically.
+   `node tests/boot/run.js` → `boot: 10 scenarios (8 entries compiled), 54
+   transcript lines, 112 memory probe lines … boot: OK, the synthetic RPX
+   boots headless with stable checkpoints` (TCC 0.9.27; proc_ui scenario
+   added 2026-10-20, GHS data scenario added 2026-10-21).
 
-   The fixture paid for itself immediately by finding three real defects. (1)
+   The fixture paid for itself immediately by finding four real defects. (1)
    Address-taken imports were absent from the generated `ppcx_import_name`
    table — the translator only recorded REL24 call sites — so the dispatcher
    reported `unknown-import` and the HLE layer silently no-opped a call made
@@ -290,8 +297,13 @@ first GX2 frame?
    `ppcx_bc(c, 0, 0)`; `BO = 0` decrements CTR, so the switch target shifted
    from `0x1013C` to `0x1013B` and the runtime rejected it. The decoder now
    returns `bo: 20, bi: 0`, the emission is a bare `PPCX_DISPATCH`, and a
-   regression test asserts no `ppcx_bc` gate. All three were observed as
-   failing transcripts before the fixes (10 and 4 reported failures in the
+   regression test asserts no `ppcx_bc` gate. (4) Data imports were treated
+   like function imports, so their ADDR16 sites produced the executable
+   trampoline address, and the `__gh_FOPEN_MAX` low half was not patched at
+   all because it sits on an `lhz` displacement; the translator now selects
+   `PPCX_IMPORT_DATA_ADDR` from the recorded import kind and applies
+   `ADDR16_LO` to D-form loads. These were observed as failing transcripts or
+   probes before the fixes (10 and 4 reported failures in the
    two mutation runs — reverting the frame and changing one authored data
    word); the v208 demo afterwards runs the same entry with the modeled
    `proc_ui.ProcUIInit` and exits 0 in strict mode (`r3 = 0x031FA4C8` is the
@@ -445,8 +457,20 @@ first GX2 frame?
   landed 2026-10-20 under
   [ADR-0005](../architecture/decisions/0005-deterministic-tls.md) as one
   zero-filled main-module block at `0x00090100`; `.tdata`, threads and
-  per-thread copies remain open. Remaining tier 1 work: the `_iob` /
-  `__gh_FOPEN_MAX` data slots; then filesystem and threading models.
+  per-thread copies remain open. The GHS stdio data imports landed 2026-10-21
+  under
+  [ADR-0006](../architecture/decisions/0006-ghs-data-imports.md):
+  `__gh_FOPEN_MAX` (16-bit value 20) and `_iob` (20 × 0x10 bytes) live in a
+  separate page at `0x00091000`, data imports resolve through
+  `PPCX_IMPORT_DATA_ADDR` instead of the function trampoline, and
+  `R_PPC_ADDR16_LO` is applied to D-form loads (`lhz`) as well as `addi`.
+  The containing v208 function `0x0420E824` translates cleanly (62
+  instructions, no unsupported/warnings) with `PPCX_IMPORT_DATA_ADDR(144)`
+  for `_iob` and a `ppcx_rd16` expression over
+  `PPCX_IMPORT_DATA_ADDR(132)` for `__gh_FOPEN_MAX`; it is not executed
+  because it still reaches unmodeled dispatch targets and `__gh_set_errno`.
+  The other six v208 data imports remain deliberately unmodeled and fail
+  loudly. Remaining tier 1 work: filesystem and threading models.
 - **GX2 bootstrap:** drive the documented chain (entry `0x03C70404` →
   `FUN_02c5e5f4` → … → `FUN_0309bbb0`, the only `GX2Init` site at
   `0x0309BC80`) with dispatch tracing, then model GX2 calls as

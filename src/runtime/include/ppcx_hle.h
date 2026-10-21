@@ -136,6 +136,37 @@ typedef struct PpcxTlsState {
 const PpcxTlsState *ppcx_hle_tls_state(void);
 void ppcx_hle_tls_reset(void);
 
+/* GHS C-library data imports.
+ *
+ * coreinit exports __gh_FOPEN_MAX and _iob as data, not functions. The image
+ * links ADDR16/HA relocation pairs at their use sites, so the translator must
+ * resolve them to real storage addresses instead of the function trampoline
+ * region. The layout follows the decaf GHS ABI: FOPEN_MAX is a 16-bit value
+ * of 20 and _iob is 20 entries of 0x10 bytes (0x140 bytes total).
+ *
+ * _iob lives in its own page above the OSSystemInfo/TLS page. _iob[0..2] get
+ * the info fields that coreinit's gh_iob_init writes for stdin/stdout/stderr;
+ * no stream buffers or file descriptors are modeled. This is deterministic
+ * storage for pointer arithmetic and flag inspection, not stdio emulation.
+ */
+#define PPCX_GHS_DATA_ADDR 0x00091000u
+#define PPCX_GHS_DATA_SIZE 0x00001000u
+#define PPCX_GH_FOPEN_MAX_ADDR PPCX_GHS_DATA_ADDR
+#define PPCX_GH_FOPEN_MAX 20u
+#define PPCX_GHS_IOBUF_SIZE 0x10u
+#define PPCX_GHS_IOB_COUNT PPCX_GH_FOPEN_MAX
+#define PPCX_GHS_IOB_INFO_OFFSET 0x0cu
+#define PPCX_GHS_IOB_ADDR (PPCX_GHS_DATA_ADDR + 0x00000100u)
+#define PPCX_GHS_IOB_SIZE (PPCX_GHS_IOB_COUNT * PPCX_GHS_IOBUF_SIZE)
+
+/* Resolve a qualified coreinit data import (for example
+ * "coreinit.__gh_FOPEN_MAX") to its modeled guest address. Returns 0 for
+ * unmodeled data imports; callers must fail rather than silently aliasing. */
+u32 ppcx_hle_data_addr(const char *qualified_name);
+
+/* Reinitialize __gh_FOPEN_MAX and the _iob entries. */
+void ppcx_hle_ghs_reset(void);
+
 /* Input models (padscore KPAD/WPAD, vpad, vpadbase).
  *
  * This is a deterministic headless placeholder, not host input or controller

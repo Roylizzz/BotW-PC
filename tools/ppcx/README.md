@@ -39,9 +39,10 @@ node tools/ppcx/ppcx.js image     --rpx /path/to/U-King-v208.rpx --out build/ppc
 report with every warning, unsupported instruction and dispatch target it
 left behind (`build/ppcx/translate-report.json`). The report lists every
 import the unit depends on, split into `calls` (REL24 sites) and
-`addressTaken` (ADDR16 sites); both kinds are resolved through the generated
-`ppcx_import_name`, because an address-taken import is called at run time
-through the dispatcher trampoline. The same pipeline is available as a small
+`addressTaken` (ADDR16 sites). Function imports resolve through the generated
+`ppcx_import_name` and the dispatcher trampoline; data imports resolve through
+the same name table but `ppcx_import_data_addr` maps them to modeled storage,
+never to executable trampoline addresses. The same pipeline is available as a small
 Node API (`loadRpx`/`loadRpxFrom`, `computeAnalysis`, `buildRangeMap`,
 `scanCallees`, `translateModule`), which `tests/boot` uses to emit one unit
 per boot scenario; `translateModule` accepts several roots plus an explicit
@@ -129,6 +130,20 @@ The pipeline runs against the real module (9,248,515 words of `.text`):
   0xF00-byte block at `0x00090100`; it is not threading or initialized TLS.
   See [ADR-0005](../architecture/decisions/0005-deterministic-tls.md).
 
+  The GHS data imports landed on 2026-10-21 under
+  [ADR-0006](../architecture/decisions/0006-ghs-data-imports.md). The v208
+  module has eight `.dimport_coreinit` slots; `__gh_FOPEN_MAX` (four ADDR16
+  sites, each an `addis` + `lhz` pair) and `_iob` (eight sites, `addis` +
+  `addi`) now resolve to storage at `0x00091000`/`0x00091100` through
+  `PPCX_IMPORT_DATA_ADDR`. Unmodeled data imports stop with
+  `ppcx: unmodeled data import …` and exit 7. Translating the containing v208
+  function `0x0420E824` emits 62 instructions with no unsupported/warning,
+  including `PPCX_IMPORT_DATA_ADDR(144)` for `_iob` and a `ppcx_rd16`
+  expression over `PPCX_IMPORT_DATA_ADDR(132)` for `__gh_FOPEN_MAX`; the
+  function is not run because it still reaches unmodeled dispatch targets and
+  `__gh_set_errno`. The other six v208 data imports remain deliberately
+  unmodeled; there is no filesystem or stdio model.
+
 Full notes, metrics and the remaining gaps towards a first GX2 frame are in
 `docs/research/2026-10-recompiler-prototype.md`.
 
@@ -206,8 +221,12 @@ user's own dump and stays under `build/` (git-ignored).
   memory is a flat 32-bit arena the runtime allocates.
 * `bl` to an import relocation becomes `PPCX_HLE(c, idx)`; a `b` to an
   import relocation is a tail call (`PPCX_HLE(c, idx); return;` — the import
-  returns straight to the wrapper's caller). Taking the address of an import
-  (ADDR16 HA/LO) becomes `PPCX_IMPORT_ADDR(idx)`.
+  returns straight to the wrapper's caller). Taking the address of a function
+  import (ADDR16 HA/LO) becomes `PPCX_IMPORT_ADDR(idx)`; taking the address of
+  a data import becomes `PPCX_IMPORT_DATA_ADDR(idx)`. `R_PPC_ADDR16_LO` is
+  applied to the displacement of D-form memory instructions (`lhz`, `lwz`, …),
+  not only to `addi`, because GHS data sites such as `__gh_FOPEN_MAX` use
+  `addis` + `lhz`.
 * Calls to translated functions are C calls; `blr` is `return;`. Returns
   therefore follow the C stack, which matches regular call/return code.
 * Branches whose target is not in the translated set, indirect calls and
@@ -266,22 +285,26 @@ boundary/unaligned/host accesses, thirteen illegal accesses (nine outside
 every region and four writes to a read-only one) each failing in its own
 process with exit code 9 and an exact diagnostic, the fault hook and
 run-to-run determinism. The HLE part checks the memory/cache models under
-the same map (36 positive lines: `OSBlockMove` non-overlapping and
+the same map (45 positive lines: `OSBlockMove` non-overlapping and
 overlapping, `OSBlockSet`, `memcpy`, `memset`, block-granular
 `DCZeroRange`, cache/barrier no-ops, the mapped `OSGetSystemInfo`
-system-info record, the valid/invalid TLS index cases, read-only source) and
-five HLE fault processes (read-only destination, unmapped destination,
-unmapped source, read-only `DCZeroRange` block, unmapped TLS index)
+system-info record, the valid/invalid TLS index cases, the GHS
+`__gh_FOPEN_MAX`/`_iob` values and reset, read-only source) and five HLE
+fault processes (read-only destination, unmapped destination, unmapped
+source, read-only `DCZeroRange` block, unmapped TLS index)
 (`node tests/mem/run.js` → `mem: OK`; the job runs in CI).
 
-The synthetic boot harness (`tests/boot`) authors a game-free RPX (nine
-functions plus an inline three-entry `b`-table, eight imports, relocated
-`.rodata` pointers, two applied TLS sites, `.data`/`.bss`), runs it through
+The synthetic boot harness (`tests/boot`) authors a game-free RPX (ten
+functions plus an inline three-entry `b`-table, ten imports including the two
+GHS data slots, relocated `.rodata` pointers, two applied TLS sites,
+`.data`/`.bss`), runs it through
 the real `analyze` → `translateModule` → `buildImage`/`serializeImage` path,
 compiles the generated unit with the real runtime, checked-memory model,
-image loader and HLE layer, and boots it headless in nine scenarios: modeled
+image loader and HLE layer, and boots it headless in ten scenarios: modeled
 calls through a direct `bl` and through an address-taken import's dispatcher
-trampoline (`PPCX_HLE_TRACE`/`PPCX_DISPATCH_TRACE` transcripts), an unmodeled
+trampoline (`PPCX_HLE_TRACE`/`PPCX_DISPATCH_TRACE` transcripts), a data-import
+entry using `addis` + `lhz` for `__gh_FOPEN_MAX` and `addis` + `addi` for
+`_iob` (`r3 = 0x18`), an unmodeled
 `coreinit.OSSleepTicks` tolerated as a counted no-op, `PPCX_HLE_STRICT=1`
 (exit 5 + register dump), a pointer-only getter reached from `.rodata`, a
 cross-range tail `b` that runs the mid-body start the analysis fixpoint
@@ -292,20 +315,23 @@ calls with a post-shutdown `EXITING` status (`r3 = 0x47`), an unmapped read
 (exit 9) and the same boot without `PPCX_IMAGE` (exit 9 at the first data
 read). Every stderr/stdout line and every guest-memory probe is compared with
 fixture-authored expectations, and the boot run must repeat byte-identically
-(`node tests/boot/run.js` → `boot: 9 scenarios … boot: OK`). The fixture found
-three defects now gated there: address-taken imports missing from
+(`node tests/boot/run.js` → `boot: 10 scenarios … boot: OK`). The fixture found
+four defects now gated there: address-taken imports missing from
 `ppcx_import_name`, an initial SP that left the loader's ABI frame outside the
-stack region, and canonical `blr`/`bctr` omitting `BO`/`BI` so the switch
-dispatch gate decremented CTR and shifted the target by one word; the tail
+stack region, data imports being routed to the function trampoline (and
+`ADDR16_LO` not applied to `lhz`), and canonical `blr`/`bctr` omitting
+`BO`/`BI` so the switch dispatch gate decremented CTR and shifted the target
+by one word; the tail
 scenario additionally gates the cross-range start fixpoint (pre-fixpoint
 analyzer → 14 failures, including the runtime exit 4 at `0x000100F0`).
 
 The native HLE contract test (`tests/hle/test_hle.c`, compiled with
 `cc -Wall -Wextra -Werror` in CI) covers the 41 modeled calls (18 coreinit
-identity/memory/cache/clock/TLS, five proc_ui lifecycle and 18 input models),
-exact-name matching, register preservation, the 64-bit `r3:r4` clock returns,
-the 0x20-byte system-info and 0x28-byte calendar layouts, TLS index
-resolution/invalid indices and the `OSBlockMove` overlap guarantee on a raw
+identity/memory/cache/clock/TLS, five proc_ui lifecycle and 18 input models)
+plus the GHS data slots, exact-name matching, register preservation, the
+64-bit `r3:r4` clock returns, the 0x20-byte system-info and 0x28-byte
+calendar layouts, TLS index resolution/invalid indices, the FOPEN value, all
+20 `_iob` entries and reset, and the `OSBlockMove` overlap guarantee on a raw
 arena.
 
 All tests use only synthetic instruction sequences, synthetic import tables

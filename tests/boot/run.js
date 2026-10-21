@@ -91,10 +91,10 @@ function buildScenario() {
     const blob = serializeImage(plan);
 
     const e = f.expected;
-    const translatedFunctions = 15; /* the seven authored entries plus the
-                                      helper, the tail target, the three
-                                      inline branch-table entries and the
-                                      three switch case bodies */
+    const translatedFunctions = 16; /* the authored scenarios plus the helper,
+                                      tail target, inline branch-table entries
+                                      and switch case bodies, including the
+                                      data-import entry */
     const imageLine =
         `ppcx: image <image> mapped: ${e.segments} segment(s), ${e.bytes} bytes (1 BSS)`;
     const entryLine = (addr) => `ppcx: entry 0x${hex8(addr)}, ${translatedFunctions} translated function(s)`;
@@ -129,13 +129,27 @@ function buildScenario() {
                 imageLine,
                 entryLine(e.entry.boot),
                 `ppcx: dispatch 0x${hex8(e.entry.boot)}`,
-                "ppcx: HLE modeled #1: coreinit.memcpy (import 2), r3=0x00020300",
+                "ppcx: HLE modeled #1: coreinit.memcpy (import 4), r3=0x00020300",
                 "ppcx: dispatch 0x50000000", /* import trampoline (ADDR16 site) */
                 "ppcx: HLE modeled #2: coreinit.OSBlockMove (import 0), r3=0x00020310",
                 "ppcx: entry returned, r3 = 0x11223344",
                 "ppcx: HLE calls: 2 (unimplemented services remain)",
             ],
             stdout: probesToStdout(bootProbes, 0, 2),
+        },
+        {
+            id: "data",
+            entry: e.entry.data,
+            env: {},
+            image: true,
+            status: 0,
+            stderr: [
+                imageLine,
+                entryLine(e.entry.data),
+                "ppcx: entry returned, r3 = 0x00000018",
+                "ppcx: HLE calls: 0 (unimplemented services remain)",
+            ],
+            stdout: probesToStdout(initialProbes, 0, 0),
         },
         {
             id: "tolerant",
@@ -220,13 +234,13 @@ function buildScenario() {
             stderr: [
                 imageLine,
                 entryLine(e.entry.procui),
-                "ppcx: HLE modeled #1: proc_ui.ProcUIInit (import 4), r3=0x00010048",
-                "ppcx: HLE modeled #2: proc_ui.ProcUIRegisterCallback (import 6), r3=0x00000005",
-                "ppcx: HLE modeled #3: proc_ui.ProcUIProcessMessages (import 5), r3=0x00000000",
-                "ppcx: HLE modeled #4: proc_ui.ProcUIDrawDoneRelease (import 3), r3=0x00000000",
-                "ppcx: HLE modeled #5: proc_ui.ProcUIProcessMessages (import 5), r3=0x00000000",
-                "ppcx: HLE modeled #6: proc_ui.ProcUIShutdown (import 7), r3=0x00000000",
-                "ppcx: HLE modeled #7: proc_ui.ProcUIProcessMessages (import 5), r3=0x00000003",
+                "ppcx: HLE modeled #1: proc_ui.ProcUIInit (import 6), r3=0x00010048",
+                "ppcx: HLE modeled #2: proc_ui.ProcUIRegisterCallback (import 8), r3=0x00000005",
+                "ppcx: HLE modeled #3: proc_ui.ProcUIProcessMessages (import 7), r3=0x00000000",
+                "ppcx: HLE modeled #4: proc_ui.ProcUIDrawDoneRelease (import 5), r3=0x00000000",
+                "ppcx: HLE modeled #5: proc_ui.ProcUIProcessMessages (import 7), r3=0x00000000",
+                "ppcx: HLE modeled #6: proc_ui.ProcUIShutdown (import 9), r3=0x00000000",
+                "ppcx: HLE modeled #7: proc_ui.ProcUIProcessMessages (import 7), r3=0x00000003",
                 "ppcx: entry returned, r3 = 0x00000047",
                 "ppcx: HLE calls: 7 (unimplemented services remain)",
             ],
@@ -279,8 +293,9 @@ function buildDriver(f) {
     out.push('    printf("boot rc=%d\\n", rc);');
     out.push('    printf("boot hle-calls=%u\\n", ppcx_hle_call_count());');
     for (const p of f.expected.probes) {
+        const read = p.width === 16 ? "ppcx_rd16" : "ppcx_rd32";
         out.push(
-            `    printf("checkpoint ${p.name}=%08X\\n", (unsigned)ppcx_rd32(0x${hex8(p.addr)}u));`
+            `    printf("checkpoint ${p.name}=%08X\\n", (unsigned)${read}(0x${hex8(p.addr)}u));`
         );
     }
     out.push("    return rc;");
@@ -389,6 +404,7 @@ function runBoot(opts = {}) {
         f.expected.entry.tail,
         f.expected.entry.switch,
         f.expected.entry.procui,
+        f.expected.entry.data,
         /* The computed bctr target is invisible to the translator's static
          * callee walk, so the harness emits the discovered table entries as
          * explicit roots (same reason the pointer-only getter is a root). */
@@ -403,10 +419,10 @@ function runBoot(opts = {}) {
         );
     }
     const reference = translationByEntry.get(f.expected.entry.boot);
-    if (reference.report.totals.functions !== 15) {
+    if (reference.report.totals.functions !== 16) {
         failures.push({
             id: "translate.functions",
-            detail: `expected 15 translated functions, got ${reference.report.totals.functions}`,
+            detail: `expected 16 translated functions, got ${reference.report.totals.functions}`,
         });
     }
     if (reference.report.totals.unsupportedInstructions !== 0 || reference.report.totals.warnings !== 0) {
@@ -415,10 +431,10 @@ function runBoot(opts = {}) {
             detail: `${reference.report.totals.unsupportedInstructions} unsupported, ${reference.report.totals.warnings} warnings`,
         });
     }
-    if (reference.report.totals.instructions !== 120) {
+    if (reference.report.totals.instructions !== 133) {
         failures.push({
             id: "translate.instructions",
-            detail: `expected 120 instructions, got ${reference.report.totals.instructions}`,
+            detail: `expected 133 instructions, got ${reference.report.totals.instructions}`,
         });
     }
     const tailCall = `PPCX_TAILCALL(c, f_${hex8(f.expected.tailStarts[0])});`;
@@ -435,12 +451,14 @@ function runBoot(opts = {}) {
     const wantHle = new Map([
         [0, { label: "coreinit.OSBlockMove", calls: 0, addressTaken: 1 }],
         [1, { label: "coreinit.OSSleepTicks", calls: 1, addressTaken: 0 }],
-        [2, { label: "coreinit.memcpy", calls: 1, addressTaken: 0 }],
-        [3, { label: "proc_ui.ProcUIDrawDoneRelease", calls: 1, addressTaken: 0 }],
-        [4, { label: "proc_ui.ProcUIInit", calls: 1, addressTaken: 0 }],
-        [5, { label: "proc_ui.ProcUIProcessMessages", calls: 3, addressTaken: 0 }],
-        [6, { label: "proc_ui.ProcUIRegisterCallback", calls: 1, addressTaken: 0 }],
-        [7, { label: "proc_ui.ProcUIShutdown", calls: 1, addressTaken: 0 }],
+        [2, { label: "coreinit.__gh_FOPEN_MAX", calls: 0, addressTaken: 1 }],
+        [3, { label: "coreinit._iob", calls: 0, addressTaken: 1 }],
+        [4, { label: "coreinit.memcpy", calls: 1, addressTaken: 0 }],
+        [5, { label: "proc_ui.ProcUIDrawDoneRelease", calls: 1, addressTaken: 0 }],
+        [6, { label: "proc_ui.ProcUIInit", calls: 1, addressTaken: 0 }],
+        [7, { label: "proc_ui.ProcUIProcessMessages", calls: 3, addressTaken: 0 }],
+        [8, { label: "proc_ui.ProcUIRegisterCallback", calls: 1, addressTaken: 0 }],
+        [9, { label: "proc_ui.ProcUIShutdown", calls: 1, addressTaken: 0 }],
     ]);
     if (reference.report.hleImportsUsed.length !== wantHle.size) {
         failures.push({ id: "translate.hle", detail: JSON.stringify(reference.report.hleImportsUsed) });

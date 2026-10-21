@@ -424,6 +424,34 @@ static void hle_tls_get_addr(Cpu *cpu) {
     cpu->gpr[3] = result;
 }
 
+/* ---- GHS C-library data ------------------------------------------------
+ * __gh_FOPEN_MAX and _iob are data imports, so they are resolved by name to
+ * storage in a page that is separate from the OSSystemInfo/TLS page. The
+ * values follow the decaf GHS ABI: 20 open files, 0x10-byte iobuf entries and
+ * the three standard streams flagged readable/writable on channels 0..2.
+ * Stream buffers and host file descriptors are deliberately not modeled.
+ */
+u32 ppcx_hle_data_addr(const char *qualified_name) {
+    if (qualified_name == NULL) return 0u;
+    if (strcmp(qualified_name, "coreinit.__gh_FOPEN_MAX") == 0) {
+        return PPCX_GH_FOPEN_MAX_ADDR;
+    }
+    if (strcmp(qualified_name, "coreinit._iob") == 0) return PPCX_GHS_IOB_ADDR;
+    return 0u;
+}
+
+void ppcx_hle_ghs_reset(void) {
+    if (ppcx_memory == NULL) return;
+    memset(ppcx_memory + (size_t)PPCX_GHS_DATA_ADDR, 0, (size_t)PPCX_GHS_DATA_SIZE);
+    ppcx_wr16(PPCX_GH_FOPEN_MAX_ADDR, (u16)PPCX_GH_FOPEN_MAX);
+    /* ghs_iobuf.info: bit 1 writable, bit 2 readable, channel in bits
+     * 18..31. These are the gh_iob_init values for the three standard
+     * streams; the remaining 17 entries stay zeroed. */
+    ppcx_wr32(PPCX_GHS_IOB_ADDR + 0u * PPCX_GHS_IOBUF_SIZE + PPCX_GHS_IOB_INFO_OFFSET, 0x00000004u);
+    ppcx_wr32(PPCX_GHS_IOB_ADDR + 1u * PPCX_GHS_IOBUF_SIZE + PPCX_GHS_IOB_INFO_OFFSET, 0x00040002u);
+    ppcx_wr32(PPCX_GHS_IOB_ADDR + 2u * PPCX_GHS_IOBUF_SIZE + PPCX_GHS_IOB_INFO_OFFSET, 0x00080002u);
+}
+
 /* ---- input ------------------------------------------------------------
  *
  * Public contracts checked against wut padscore/kpad.h, padscore/wpad.h,

@@ -20,9 +20,10 @@ It provides:
 * diagnostics with full register context for untranslated instructions and
   unregistered targets,
 * the HLE entry point for imported system functions, with exact-name coreinit
-  core identity/flat-memory/cache/clock/system-info/TLS models, the proc_ui
-  lifecycle and explicit diagnostics for everything else. This is not yet
-  full Cafe OS, initialized TLS or multi-core scheduling.
+  core identity/flat-memory/cache/clock/system-info/TLS models, the GHS
+  `__gh_FOPEN_MAX`/`_iob` data imports, the proc_ui lifecycle and explicit
+  diagnostics for everything else. This is not yet full Cafe OS, initialized
+  TLS, stdio or multi-core scheduling.
 
 ## Build (local prototype)
 
@@ -133,10 +134,12 @@ built.
 
 ## Implemented HLE subset (synthetic tests)
 
-Forty original, exact-name functions are implemented in `ppcx_hle.c`:
-seventeen `coreinit` calls, five `proc_ui` lifecycle calls and eighteen
-`padscore`/`vpad`/`vpadbase` input calls. The four clock/system-info additions
-are the deterministic virtual clock described below.
+Forty-one original, exact-name functions are implemented in `ppcx_hle.c`:
+eighteen `coreinit` calls, five `proc_ui` lifecycle calls and eighteen
+`padscore`/`vpad`/`vpadbase` input calls. The coreinit group includes the
+four clock/system-info additions (the deterministic virtual clock described
+below) and the TLS resolver. Two GHS **data** imports are modeled beside the
+functions; they are storage, not dispatch entries.
 
 * **Core identity:** `OSGetCoreCount` (3), `OSGetCoreId` (1),
   `OSGetMainCoreId` (1), `OSIsMainCore` (true). The runtime's only guest CPU
@@ -176,6 +179,16 @@ are the deterministic virtual clock described below.
   Sunday = 0); negative inputs clamp to 2000-01-01. The clock model is a
   placeholder for scheduling and timer-interrupt behavior; see
   [ADR-0004](../../docs/architecture/decisions/0004-deterministic-virtual-clock.md).
+* **GHS stdio data:** `__gh_FOPEN_MAX` (16-bit value **20**) and `_iob`
+  (20 entries × 0x10 bytes = 0x140) are resolved by exact qualified name to a
+  separate writable page at `0x00091000`; `_iob` starts at `0x00091100`.
+  The first three `info` words are `0x00000004` (stdin, readable),
+  `0x00040002` (stdout, writable) and `0x00080002` (stderr, writable); the
+  rest of the page is zero. `ppcx_hle_ghs_reset` clears the page and restores
+  those values at boot. This is deterministic storage for pointer arithmetic
+  and flag inspection, not `FILE` semantics, stream buffers, file descriptors
+  or stdio calls; see
+  [ADR-0006](../../docs/architecture/decisions/0006-ghs-data-imports.md).
 * **Input (headless placeholder):** the `padscore` calls `KPADGetMplsWorkSize`
   (returns a model-chosen 0x100-byte work size), `KPADInitEx`,
   `KPADSetMplsWorkarea` and `KPADReadEx`; `WPADProbe` (always
@@ -276,6 +289,19 @@ v208 function at `0x03F92140` prints
 `HLE modeled #1: coreinit.__tls_get_addr (import 143), r3=0x00090104` and
 exits 0 under `PPCX_HLE_STRICT=1`.
 
+The GHS data imports landed on 2026-10-21 under
+[ADR-0006](../architecture/decisions/0006-ghs-data-imports.md). The runtime
+maps a second HLE page at `0x00091000..0x00092000` and resets it before the
+entry point: `__gh_FOPEN_MAX` at `0x00091000` and `_iob` at `0x00091100`.
+Generated code resolves a data import through `PPCX_IMPORT_DATA_ADDR`; the
+runtime looks the qualified name up with `ppcx_hle_data_addr`, and an
+unmodeled data import prints
+`ppcx: unmodeled data import <name> (import N)` and exits 7 instead of
+returning the function trampoline or a silent zero. The translator applies
+`R_PPC_ADDR16_LO` to D-form memory displacements, which is required for the
+real `addis` + `lhz` shape at the `__gh_FOPEN_MAX` sites. The other six v208
+data imports remain unmodeled.
+
 All other imports remain unimplemented, including filesystem, threading, GX2
 and the Wii Remote audio/motor path. In diagnostic mode they are counted but
 still return as no-ops (not a valid game execution path). Set
@@ -293,12 +319,13 @@ cc -std=c11 -Wall -Wextra -Werror -I src/runtime/include src/runtime/src/ppcx_hl
 The contract test runs on a raw host arena (`ppcx_mem_active` is 0, with a
 stubbed checker) and covers the 41 models, exact-name matching and register
 preservation, including the 64-bit clock returns, the system-info and
-calendar layouts, TLS resolution and reset, the proc_ui lifecycle, callback
-table and re-init, and the input init/read, touch, callback, motor, gyro and
-WPAD contracts. The compiled `tests/mem` harness links the same `ppcx_hle.c`
-with the real `ppcx_mem.c` and region map: it checks the copy, fill and block
-semantics, the reserved HLE data page, the guest `OSSystemInfo` record and
-valid/invalid TLS indices, and runs five extra child processes in which a
+calendar layouts, TLS resolution and reset, the GHS data names/values/reset,
+the proc_ui lifecycle, callback table and re-init, and the input init/read,
+touch, callback, motor, gyro and WPAD contracts. The compiled `tests/mem`
+harness links the same `ppcx_hle.c` with the real `ppcx_mem.c` and region
+map: it checks the copy, fill and block semantics, the reserved HLE data
+pages, the guest `OSSystemInfo` record, valid/invalid TLS indices and the GHS
+data values (45 positive HLE lines), and runs five extra child processes in which a
 read-only destination, an unmapped destination, an unmapped source, a
 read-only `DCZeroRange` block and an unmapped TLS index must each exit with
 code 9 and the exact diagnostic. The workflow is manual-only; dispatch
@@ -312,11 +339,13 @@ lifecycle or input calls as evidence of full Cafe OS compatibility.
 `ppcx_hle.c` and `ppcx_image.c`), a generated translation unit and a small
 driver, then boots a game-free RPX from `tests/boot/fixture.js` headless. The
 fixture exercises the real pipeline end to end — analysis, translation, load
-image, checked memory and HLE — in nine scenarios: modeled calls through a
+image, checked memory and HLE — in ten scenarios: modeled calls through a
 direct `bl` and through an address-taken import's dispatcher trampoline (with
-`PPCX_HLE_TRACE`/`PPCX_DISPATCH_TRACE` checkpoints), an unmodeled import in
-diagnostic mode, `PPCX_HLE_STRICT=1` (exit 5 with the register dump), a
-pointer-only getter, a cross-range tail `b` that must run the mid-body start
+`PPCX_HLE_TRACE`/`PPCX_DISPATCH_TRACE` checkpoints), a data-import entry that
+takes `__gh_FOPEN_MAX` with `addis` + `lhz` and `_iob` with `addis` + `addi`
+(returning `r3 = 0x18`), an unmodeled import in diagnostic mode,
+`PPCX_HLE_STRICT=1` (exit 5 with the register dump), a pointer-only getter, a
+cross-range tail `b` that must run the mid-body start
 the analysis discovered (`r3 = 2` only if the jump skips `addi r3,0,0x40`), a
 computed `bctr` inline-table switch that must dispatch through its `b` entry
 and return `r3 = 0x11`, the five modeled `proc_ui` lifecycle calls with a

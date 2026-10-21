@@ -321,6 +321,22 @@ function buildHle() {
     line('printf("hle-tls-bad-module=%d\\n", ppcx_hle_dispatch_named(&cpu, "coreinit.__tls_get_addr"));', "hle-tls-bad-module=1");
     line('printf("hle-tls-bad-r3=%08X\\n", (unsigned)cpu.gpr[3]);', "hle-tls-bad-r3=00000000");
 
+    /* The GHS stdio data imports live in the adjacent HLE page. Resolve the
+     * qualified names to storage and verify the ABI values through the real
+     * checked accessors. */
+    stmt('printf("hle-ghs-map=%d\\n", ppcx_mem_add_perm(PPCX_GHS_DATA_ADDR, PPCX_GHS_DATA_SIZE, "ghs-data", PPCX_MEM_WRITE));');
+    expected.push("hle-ghs-map=0");
+    stmt("ppcx_hle_ghs_reset();");
+    line('printf("hle-fopen-addr=%08X\\n", (unsigned)ppcx_hle_data_addr("coreinit.__gh_FOPEN_MAX"));', "hle-fopen-addr=00091000");
+    line('printf("hle-fopen=%04X\\n", (unsigned)ppcx_rd16(PPCX_GH_FOPEN_MAX_ADDR));', "hle-fopen=0014");
+    line('printf("hle-iob-addr=%08X\\n", (unsigned)ppcx_hle_data_addr("coreinit._iob"));', "hle-iob-addr=00091100");
+    line('printf("hle-iob-stdin=%08X\\n", (unsigned)ppcx_rd32(PPCX_GHS_IOB_ADDR + 0x00Cu));', "hle-iob-stdin=00000004");
+    line('printf("hle-iob-stdout=%08X\\n", (unsigned)ppcx_rd32(PPCX_GHS_IOB_ADDR + 0x01Cu));', "hle-iob-stdout=00040002");
+    line('printf("hle-iob-stderr=%08X\\n", (unsigned)ppcx_rd32(PPCX_GHS_IOB_ADDR + 0x02Cu));', "hle-iob-stderr=00080002");
+    line('printf("hle-iob-reserved=%08X\\n", (unsigned)ppcx_rd32(PPCX_GHS_IOB_ADDR + 0x03Cu));', "hle-iob-reserved=00000000");
+    stmt("ppcx_wr16(PPCX_GH_FOPEN_MAX_ADDR, 0xffffu); ppcx_hle_ghs_reset();");
+    line('printf("hle-ghs-reset=%04X\\n", (unsigned)ppcx_rd16(PPCX_GH_FOPEN_MAX_ADDR));', "hle-ghs-reset=0014");
+
     line('printf("hle-unknown=%d\\n", ppcx_hle_dispatch_named(&cpu, "coreinit.OSBlockMoveX"));', "hle-unknown=0");
     return { code, expected };
 }
