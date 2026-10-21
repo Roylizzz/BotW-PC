@@ -103,6 +103,39 @@ typedef struct PpcxClockState {
 const PpcxClockState *ppcx_hle_clock_state(void);
 void ppcx_hle_clock_reset(void);
 
+/* Deterministic single-thread TLS model.
+ *
+ * The load image resolves the main module's R_PPC_DTPMOD32 sites to module 1
+ * and R_PPC_DTPREL32 sites to the symbol-relative offset. __tls_get_addr
+ * validates the 8-byte TLSIndex (module, offset), then returns a pointer into
+ * a zero-filled block reserved in the HLE data page. The block is part of the
+ * existing 0x00090000 page, starts above the OSSystemInfo record, and is
+ * cleared by ppcx_hle_tls_reset() at the start of each run.
+ *
+ * This models one thread and one module. Initialized TLS (.tdata), dynamic
+ * modules and real thread-local copies are out of scope; the image builder
+ * rejects TLS symbols that do not fit this block. The measured v208 TLSIndex
+ * objects carry plain 0/4/8 offsets, so the handler uses base + offset rather
+ * than the generic PowerPC -0x8000 DTP bias.
+ */
+#define PPCX_TLS_MODULE_ID 1u
+#define PPCX_TLS_DATA_ADDR (PPCX_HLE_DATA_ADDR + 0x00000100u)
+#define PPCX_TLS_DATA_SIZE (PPCX_HLE_DATA_SIZE - 0x00000100u)
+
+typedef struct PpcxTlsState {
+    u32 calls;
+    u32 resolved;
+    u32 invalid_module;
+    u32 invalid_offset;
+    u32 last_index_ea;
+    u32 last_module;
+    u32 last_offset;
+    u32 last_result;
+} PpcxTlsState;
+
+const PpcxTlsState *ppcx_hle_tls_state(void);
+void ppcx_hle_tls_reset(void);
+
 /* Input models (padscore KPAD/WPAD, vpad, vpadbase).
  *
  * This is a deterministic headless placeholder, not host input or controller

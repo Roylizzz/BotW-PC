@@ -302,10 +302,11 @@ int ppcx_run(void) {
     ppcx_mem_set_fault_hook(ppcx_mem_fault_dump);
     ppcx_mem_reset(PPCX_INITIAL_STACK, PPCX_STACK_BYTES);
     /*
-     * Reserve the one guest page that backs HLE data returned to the game
-     * (currently the OSSystemInfo record). It sits below the loaded image and
-     * the stack; a module that maps that address is rejected instead of
-     * silently aliasing it.
+     * Reserve the one guest page that backs HLE data returned to the game:
+     * the OSSystemInfo record at the base and the deterministic single-thread
+     * TLS block above it. It sits below the loaded image and the stack; a
+     * module that maps that address is rejected instead of silently aliasing
+     * it.
      */
     if (ppcx_mem_add_perm(PPCX_HLE_DATA_ADDR, PPCX_HLE_DATA_SIZE, "hle-data",
                           PPCX_MEM_WRITE) != 0) {
@@ -313,6 +314,7 @@ int ppcx_run(void) {
                 (unsigned)PPCX_HLE_DATA_ADDR);
         return 8;
     }
+    ppcx_hle_tls_reset();
     /*
      * Optional RPX load image (build/ppcx/image.bin, written by
      * `tools/ppcx image`): maps .rodata/.data/.bss so translated code can

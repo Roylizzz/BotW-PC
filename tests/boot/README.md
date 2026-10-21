@@ -14,7 +14,7 @@ booted guest. No game data is required or produced.
    with three `b` entries and three case bodies, two `.fimport_*` sections
    with `coreinit.memcpy`, `coreinit.OSBlockMove`, `coreinit.OSSleepTicks`
    and all five `proc_ui` lifecycle imports, `.rodata` with three
-   `R_PPC_ADDR32` pointers (one with an addend) and two deferred TLS sites,
+   `R_PPC_ADDR32` pointers (one with an addend) and two applied TLS sites,
    `.data`, a NOBITS `.bss` and the allocated metadata trio;
 2. runs the real `analyze` path and asserts the authored function starts,
    the pointer-only start, the cross-range tail start, the inline
@@ -22,8 +22,8 @@ booted guest. No game data is required or produced.
 3. emits C with the real `translateModule` used by `ppcx translate`
    (registry, `ppcx_entry`, import-name table), one unit per boot entry;
 4. builds the load blob with the real `buildImage`/`serializeImage` path and
-   checks the authored segment/byte/BSS facts, the applied `ADDR32`
-   relocations, the deferred TLS sites and the code-relocation count;
+   checks the authored segment/byte/BSS facts, the applied `ADDR32` and TLS
+   relocations and the code-relocation count;
 5. compiles the generated unit with the real runtime
    (`ppcx_runtime.c`, `ppcx_mem.c`, `ppcx_hle.c`, `ppcx_image.c`) and a small
    generated driver (shared compiler discovery: `PPCX_CC`, then
@@ -47,9 +47,9 @@ booted guest. No game data is required or produced.
 | `no-image` | boot | Exit 9. Without `PPCX_IMAGE` the first data read at `0x00020100` faults instead of returning zeroes. |
 
 After a successful boot the driver prints the guest-memory probes
-(`checkpoint <name>=<value>`): the three applied `.rodata` pointers, the two
-TLS bytes still holding their authored `DDDDDDDD`/`EEEEEEEE`, the `.data`
-words and the two copied words in `.bss` (`memcpy` and the trampoline
+(`checkpoint <name>=<value>`): the three applied `.rodata` pointers, the
+resolved TLS index (`module = 1`, `offset = 4`), the `.data` words and the
+two copied words in `.bss` (`memcpy` and the trampoline
 `OSBlockMove`). The `tolerant` and `pointer` scenarios assert the untouched
 initial values, so a stray write cannot pass unnoticed.
 

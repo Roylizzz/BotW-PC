@@ -4,10 +4,10 @@
  * Models the core-identity calls used by this single-thread prototype (its
  * only guest context is pinned to Wii U main core 1), the guest-memory and
  * cache primitives whose contracts are purely mechanical, the proc_ui
- * lifecycle, the deterministic virtual clock/system-info services, and the
- * headless input services used by the input manager. It is NOT a scheduler, a
- * filesystem, a threading implementation, a HOME-menu integration or a host
- * input backend.
+ * lifecycle, the deterministic virtual clock/system-info services, the
+ * single-module TLS index resolver, and the headless input services used by
+ * the input manager. It is NOT a scheduler, a filesystem, a threading
+ * implementation, a HOME-menu integration or a host input backend.
  *
  * The flat arena has no data cache: guest-visible memory is always coherent,
  * so the cache-maintenance calls are typed no-ops that still validate their
@@ -377,6 +377,53 @@ static void hle_ticks_to_calendar(Cpu *cpu) {
     }
 }
 
+/* ---- TLS --------------------------------------------------------------
+ * The load image resolves the main module's TLS relocations to module 1 and
+ * symbol-relative offsets. This model owns a zero-filled block inside the
+ * reserved HLE data page; it is not a thread-local copy and does not model
+ * .tdata. A valid TLSIndex returns block + offset, while an unknown module or
+ * an offset outside the block returns NULL deterministically.
+ */
+static PpcxTlsState g_tls;
+
+const PpcxTlsState *ppcx_hle_tls_state(void) {
+    return &g_tls;
+}
+
+void ppcx_hle_tls_reset(void) {
+    memset(&g_tls, 0, sizeof g_tls);
+    if (ppcx_memory != NULL) {
+        memset(ppcx_memory + (size_t)PPCX_TLS_DATA_ADDR, 0, (size_t)PPCX_TLS_DATA_SIZE);
+    }
+}
+
+static void hle_tls_get_addr(Cpu *cpu) {
+    u32 index_ea = cpu->gpr[3];
+    u32 module;
+    u32 offset;
+    u32 result = 0u;
+
+    g_tls.calls++;
+    g_tls.last_index_ea = index_ea;
+    hle_check_range(index_ea, 8u, 0);
+    module = ppcx_rd32(index_ea);
+    offset = ppcx_rd32(index_ea + 4u);
+    g_tls.last_module = module;
+    g_tls.last_offset = offset;
+
+    if (module != PPCX_TLS_MODULE_ID) {
+        g_tls.invalid_module++;
+    } else if (offset >= PPCX_TLS_DATA_SIZE) {
+        g_tls.invalid_offset++;
+    } else {
+        result = PPCX_TLS_DATA_ADDR + offset;
+        g_tls.resolved++;
+    }
+
+    g_tls.last_result = result;
+    cpu->gpr[3] = result;
+}
+
 /* ---- input ------------------------------------------------------------
  *
  * Public contracts checked against wut padscore/kpad.h, padscore/wpad.h,
@@ -612,6 +659,7 @@ static const PpcxHleEntry hle_registry[] = {
     { "coreinit.OSGetTime", hle_get_time },
     { "coreinit.OSGetSystemInfo", hle_get_system_info },
     { "coreinit.OSTicksToCalendarTime", hle_ticks_to_calendar },
+    { "coreinit.__tls_get_addr", hle_tls_get_addr },
     { "proc_ui.ProcUIInit", hle_procui_init },
     { "proc_ui.ProcUIProcessMessages", hle_procui_process_messages },
     { "proc_ui.ProcUIDrawDoneRelease", hle_procui_draw_done_release },

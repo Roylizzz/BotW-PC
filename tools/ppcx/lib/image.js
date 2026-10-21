@@ -21,9 +21,12 @@
  *   - sites inside executable sections are the recompiler's business
  *     (REL24/ADDR16*): counted, left untouched, because code is translated
  *     from the file bytes, not relocated in memory;
- *   - R_PPC_DTPMOD32 / R_PPC_DTPREL32 (TLS) are *deferred*: recorded with
- *     their addresses and symbol names, bytes kept as in the file (there is
- *     no TLS model yet);
+ *   - R_PPC_DTPMOD32 writes the deterministic main-module id and
+ *     R_PPC_DTPREL32 writes the symbol-relative TLS offset (S + A). The
+ *     measured v208 TLSIndex objects already carry plain 0/4/8 offsets, so
+ *     the model uses base + offset and does not add the generic PowerPC
+ *     -0x8000 DTP bias. The HLE TLS block is documented in
+ *     src/runtime/include/ppcx_hle.h;
  *   - any other type is a build error that names every offending site.
  *
  * This code is original to the BotW-PC project and licensed under MIT.
@@ -64,6 +67,13 @@ const R_PPC_NONE = 0;
 const R_PPC_ADDR32 = 1;
 const R_PPC_DTPMOD32 = 68;
 const R_PPC_DTPREL32 = 78;
+
+/* Mirrors PPCX_TLS_MODULE_ID and PPCX_TLS_DATA_SIZE in
+ * src/runtime/include/ppcx_hle.h. The image must fail early if a TLS symbol
+ * would not fit the runtime's deterministic block. */
+const TLS_MODULE_ID = 1;
+const TLS_BLOCK_BYTES = 0xf00;
+const STT_TLS = 6;
 
 const RELOCATION_NAMES = new Map([
     [R_PPC_NONE, "R_PPC_NONE"],
@@ -193,9 +203,31 @@ function buildImage(buf, parsed) {
     /* --- relocations -------------------------------------------------- */
     const segmentByIndex = new Map(segments.map((seg) => [seg.index, seg]));
     const appliedCounts = new Map();
-    const deferred = [];
+    const tlsSites = [];
+    const tlsSymbols = new Map();
     let codeSites = 0;
     let noneSites = 0;
+
+    const recordTlsSymbol = (sym, offset) => {
+        tlsSymbols.set(sym.name, {
+            name: sym.name,
+            offset: offset >>> 0,
+            size: sym.size >>> 0,
+        });
+    };
+
+    const tlsSymbolIssue = (site, sym) => {
+        if (sym.type !== STT_TLS) {
+            return `${site} references non-TLS symbol ${sym.name || "(unnamed)"} ` +
+                `(type ${sym.type}); TLS relocations require STT_TLS`;
+        }
+        const section = sections.find((s) => s.index === sym.shndx);
+        if (!section || section.type !== SHT_NOBITS) {
+            return `${site} references ${sym.name || "(unnamed)"} in initialized storage; ` +
+                `only zero-filled thread BSS is modeled for TLS`;
+        }
+        return null;
+    };
 
     for (const relaSection of sections) {
         if (relaSection.type !== SHT_RELA) continue;
@@ -242,17 +274,58 @@ function buildImage(buf, parsed) {
                     appliedCounts.set(rel.type, (appliedCounts.get(rel.type) || 0) + 1);
                     break;
                 }
-                case R_PPC_DTPMOD32:
-                case R_PPC_DTPREL32:
-                    deferred.push({
+                case R_PPC_DTPMOD32: {
+                    const problem = tlsSymbolIssue(site, sym);
+                    if (problem) {
+                        issues.push(problem);
+                        break;
+                    }
+                    if ((sym.value >>> 0) >= TLS_BLOCK_BYTES) {
+                        issues.push(
+                            `${site} resolves ${sym.name} to offset 0x${hex8(sym.value)}, ` +
+                                `outside the ${TLS_BLOCK_BYTES}-byte HLE TLS block`
+                        );
+                        break;
+                    }
+                    seg.data.writeUInt32BE(TLS_MODULE_ID, offset);
+                    appliedCounts.set(rel.type, (appliedCounts.get(rel.type) || 0) + 1);
+                    recordTlsSymbol(sym, sym.value);
+                    tlsSites.push({
                         addr,
                         section: seg.name,
-                        type: rel.type,
-                        name: relocationName(rel.type),
+                        type: relocationName(rel.type),
                         symbol: sym.name,
-                        addend: rel.addend >>> 0,
+                        value: TLS_MODULE_ID,
                     });
                     break;
+                }
+                case R_PPC_DTPREL32: {
+                    const problem = tlsSymbolIssue(site, sym);
+                    if (problem) {
+                        issues.push(problem);
+                        break;
+                    }
+                    const value = ((sym.value >>> 0) + (rel.addend >>> 0)) >>> 0;
+                    if (value >= TLS_BLOCK_BYTES || value + (sym.size >>> 0) > TLS_BLOCK_BYTES) {
+                        issues.push(
+                            `${site} resolves ${sym.name}+${rel.addend >>> 0} to ` +
+                                `0x${hex8(value)} (+${sym.size} bytes), outside the ` +
+                                `${TLS_BLOCK_BYTES}-byte HLE TLS block`
+                        );
+                        break;
+                    }
+                    seg.data.writeUInt32BE(value, offset);
+                    appliedCounts.set(rel.type, (appliedCounts.get(rel.type) || 0) + 1);
+                    recordTlsSymbol(sym, value);
+                    tlsSites.push({
+                        addr,
+                        section: seg.name,
+                        type: relocationName(rel.type),
+                        symbol: sym.name,
+                        value,
+                    });
+                    break;
+                }
                 default:
                     issues.push(`${site} in ${seg.name} is not supported`);
                     break;
@@ -268,10 +341,15 @@ function buildImage(buf, parsed) {
                 `executable section bytes are mapped for data fidelity only and keep their link-time values`
         );
     }
-    if (deferred.length > 0) {
+    if (tlsSites.length > 0) {
+        const symbols = [...tlsSymbols.values()]
+            .sort((a, b) => a.offset - b.offset || a.name.localeCompare(b.name))
+            .map((s) => `${s.name}@${s.offset}`)
+            .join(", ");
         notes.push(
-            `${deferred.length} TLS relocation site(s) are deferred (no TLS model yet); ` +
-                `those bytes keep their values from the file`
+            `${tlsSites.length} TLS relocation site(s) applied for main module ` +
+                `${TLS_MODULE_ID} (${symbols}); the zero-filled HLE block is ` +
+                `${TLS_BLOCK_BYTES} bytes`
         );
     }
 
@@ -290,9 +368,16 @@ function buildImage(buf, parsed) {
             applied: [...appliedCounts.entries()]
                 .sort((a, b) => a[0] - b[0])
                 .map(([type, count]) => ({ type, name: relocationName(type), count })),
-            deferred,
             code: codeSites,
             none: noneSites,
+        },
+        tls: {
+            module: TLS_MODULE_ID,
+            blockBytes: TLS_BLOCK_BYTES,
+            sites: tlsSites,
+            symbols: [...tlsSymbols.values()].sort(
+                (a, b) => a.offset - b.offset || a.name.localeCompare(b.name)
+            ),
         },
         notes,
         stats: { sections: segments.length, bytes, payloadBytes, bssBytes },

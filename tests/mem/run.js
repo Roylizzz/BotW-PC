@@ -298,6 +298,7 @@ function buildHle() {
      * Map that page for this mode and verify the guest-visible record. */
     stmt('printf("hle-sysinfo-map=%d\\n", ppcx_mem_add_perm(0x00090000u, 0x00001000u, "hle-data", PPCX_MEM_WRITE));');
     expected.push("hle-sysinfo-map=0");
+    stmt("ppcx_hle_tls_reset();");
     stmt("memset(&cpu, 0, sizeof cpu);");
     line('printf("hle-sysinfo=%d\\n", ppcx_hle_dispatch_named(&cpu, "coreinit.OSGetSystemInfo"));', "hle-sysinfo=1");
     line('printf("hle-sysinfo-r3=%08X\\n", (unsigned)cpu.gpr[3]);', "hle-sysinfo-r3=00090000");
@@ -307,6 +308,18 @@ function buildHle() {
         'printf("hle-sysinfo-base=%08X%08X\\n", (unsigned)(ppcx_rd64(0x00090008u) >> 32), (unsigned)ppcx_rd64(0x00090008u));',
         "hle-sysinfo-base=00B531CFBDFB8F00"
     );
+
+    /* The TLSIndex lives in ordinary guest data; __tls_get_addr resolves the
+     * main module to the zero-filled block above the system-info record. */
+    stmt("ppcx_wr32(0x00013000u, 1u); ppcx_wr32(0x00013004u, 4u);");
+    stmt("memset(&cpu, 0, sizeof cpu); cpu.gpr[3] = 0x00013000u;");
+    line('printf("hle-tls=%d\\n", ppcx_hle_dispatch_named(&cpu, "coreinit.__tls_get_addr"));', "hle-tls=1");
+    line('printf("hle-tls-r3=%08X\\n", (unsigned)cpu.gpr[3]);', "hle-tls-r3=00090104");
+    stmt("ppcx_wr32(cpu.gpr[3], 0x5A5A1234u);");
+    line('printf("hle-tls-data=%08X\\n", (unsigned)ppcx_rd32(0x00090104u));', "hle-tls-data=5A5A1234");
+    stmt("ppcx_wr32(0x00013000u, 2u); cpu.gpr[3] = 0x00013000u;");
+    line('printf("hle-tls-bad-module=%d\\n", ppcx_hle_dispatch_named(&cpu, "coreinit.__tls_get_addr"));', "hle-tls-bad-module=1");
+    line('printf("hle-tls-bad-r3=%08X\\n", (unsigned)cpu.gpr[3]);', "hle-tls-bad-r3=00000000");
 
     line('printf("hle-unknown=%d\\n", ppcx_hle_dispatch_named(&cpu, "coreinit.OSBlockMoveX"));', "hle-unknown=0");
     return { code, expected };
@@ -345,6 +358,14 @@ function buildHleFaults() {
                 "cpu.gpr[3] = 0x00024001u; cpu.gpr[4] = 1u; " +
                 'ppcx_hle_dispatch_named(&cpu, "coreinit.DCZeroRange");',
             line: permLine(32, 0x00024000, "ro", REGION_RO, REGION_RO_SIZE),
+        },
+        {
+            id: "hle-tls-index-unmapped",
+            stmt:
+                "Cpu cpu; memset(&cpu, 0, sizeof cpu); " +
+                "cpu.gpr[3] = 0x00023000u; " +
+                'ppcx_hle_dispatch_named(&cpu, "coreinit.__tls_get_addr");',
+            line: faultLine("read", 8, 0x00023000),
         },
     ];
 }

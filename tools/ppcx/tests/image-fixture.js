@@ -7,7 +7,7 @@
  * On purpose the fixture carries:
  *   - a zlib-compressed .rodata and a NOBITS .bss (zero-fill on load),
  *   - ADDR32 relocations in .rodata and .data (must be applied),
- *   - DTPMOD32 / DTPREL32 TLS relocations in .rodata (must be deferred),
+ *   - DTPMOD32 / DTPREL32 TLS relocations in .rodata (must be applied),
  *   - one REL24 site in .text (the recompiler's business, left untouched),
  *   - the allocated metadata trio (.shstrtab/.symtab/.strtab) real modules
  *     carry,
@@ -93,9 +93,9 @@ function build() {
     writeU16(symtab, o + 14, 3);
     o = 48;
     writeU32(symtab, o, 17); /* tls_value */
-    writeU32(symtab, o + 4, 0x00020200);
+    writeU32(symtab, o + 4, 0); /* TLS symbol value is an offset, not an address */
     writeU32(symtab, o + 8, 4);
-    symtab[o + 12] = (1 << 4) | 1; /* GLOBAL OBJECT */
+    symtab[o + 12] = (1 << 4) | 6; /* GLOBAL TLS */
     writeU16(symtab, o + 14, 4);
 
     const writeRela = (buf, offset, { offset: site, type, sym, addend }) => {
@@ -111,7 +111,7 @@ function build() {
     writeRela(relaRoData, 0, { offset: 0x00020000, type: 1, sym: 1, addend: 0 });
     writeRela(relaRoData, 12, { offset: 0x00020004, type: 1, sym: 2, addend: 4 });
     writeRela(relaRoData, 24, { offset: 0x00020008, type: 68, sym: 3, addend: 0 });
-    writeRela(relaRoData, 36, { offset: 0x0002000c, type: 78, sym: 3, addend: 0 });
+    writeRela(relaRoData, 36, { offset: 0x0002000c, type: 78, sym: 3, addend: 4 });
 
     const relaData = Buffer.alloc(12);
     writeRela(relaData, 0, { offset: 0x00020100, type: 1, sym: 2, addend: 0 });
@@ -186,6 +186,8 @@ function build() {
     const rodataAfterRelocs = Buffer.from(rodataOnDisk);
     writeU32(rodataAfterRelocs, 0, 0x00010010); /* ADDR32 func_a + 0 */
     writeU32(rodataAfterRelocs, 4, 0x00020104); /* ADDR32 data_obj + 4 */
+    writeU32(rodataAfterRelocs, 8, 1); /* DTPMOD32: main module id */
+    writeU32(rodataAfterRelocs, 12, 4); /* DTPREL32: tls_value + 4 */
 
     const dataAfterRelocs = Buffer.from(dataOnDisk);
     writeU32(dataAfterRelocs, 0, 0x00020100); /* ADDR32 data_obj + 0 */
@@ -218,17 +220,18 @@ function build() {
             probes: [
                 [0x00020000, 0x00010010],
                 [0x00020004, 0x00020104],
-                [0x00020008, 0xa8a9aaab], /* DTPMOD32 deferred: authored bytes stay */
-                [0x0002000c, 0xacadaeaf], /* DTPREL32 deferred: authored bytes stay */
+                [0x00020008, 0x00000001], /* DTPMOD32: main module id */
+                [0x0002000c, 0x00000004], /* DTPREL32: tls_value + 4 */
                 [0x00020100, 0x00020100],
                 [0x00010000, TEXT_WORD0],
                 [0x00020204, 0x00000000], /* .bss zero-filled over the sentinel */
             ],
-            applied: [{ type: 1, name: "R_PPC_ADDR32", count: 3 }],
-            deferred: [
-                { addr: 0x00020008, type: 68 },
-                { addr: 0x0002000c, type: 78 },
+            applied: [
+                { type: 1, name: "R_PPC_ADDR32", count: 3 },
+                { type: 68, name: "R_PPC_DTPMOD32", count: 1 },
+                { type: 78, name: "R_PPC_DTPREL32", count: 1 },
             ],
+            tlsSymbols: [{ name: "tls_value", offset: 4, size: 4 }],
             codeRelocations: 1,
         },
     };
@@ -246,4 +249,14 @@ function patchSectionAddr(buf, layout, name, addr) {
     buf.writeUInt32BE(addr >>> 0, layout.sectionHeader(name) + 12);
 }
 
-module.exports = { build, patchRela, patchSectionAddr };
+/** Rewrites fields of one Elf32_Sym entry (test helper). */
+function patchSymbol(buf, layout, index, { value, size, info, shndx }) {
+    const symtabOffset = buf.readUInt32BE(layout.sectionHeader(".symtab") + 16);
+    const at = symtabOffset + index * 16;
+    if (value !== undefined) buf.writeUInt32BE(value >>> 0, at + 4);
+    if (size !== undefined) buf.writeUInt32BE(size >>> 0, at + 8);
+    if (info !== undefined) buf[at + 12] = info & 0xff;
+    if (shndx !== undefined) buf.writeUInt16BE(shndx & 0xffff, at + 14);
+}
+
+module.exports = { build, patchRela, patchSectionAddr, patchSymbol };

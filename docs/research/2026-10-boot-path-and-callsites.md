@@ -32,8 +32,15 @@ APIs?
    callers now have typed HLE models (`OSBlockMove`, `OSBlockSet`, `memcpy`,
    `memset`, `DCZeroRange`, the data-cache maintenance calls and
    `OSMemoryBarrier`; see the
-   [runtime README](../../src/runtime/README.md)); `__tls_get_addr` remains
-   open. Follow-up (2026-10-20): `OSGetSystemTime`/`OSGetTime`,
+   [runtime README](../../src/runtime/README.md)). Follow-up (2026-10-20):
+   `__tls_get_addr` now resolves the main module's TLS indices against one
+   deterministic zero-filled block at `0x00090100` (0xF00 bytes) under
+   [ADR-0005](../architecture/decisions/0005-deterministic-tls.md). The three
+   measured `TLSIndex` objects (`0x1045CC14`, `0x1045CC1C`, `0x1045CC24`) carry
+   offsets 4/8/0; the image writes module 1 and the six TLS relocations, and
+   the real demo `0x03F92140` returns `r3=0x00090104`. The model is single
+   module/single thread and does not cover `.tdata` or threading.
+   Follow-up (2026-10-20): `OSGetSystemTime`/`OSGetTime`,
    `OSGetSystemInfo` and `OSTicksToCalendarTime` now use the deterministic
    virtual clock in [ADR-0004](../architecture/decisions/0004-deterministic-virtual-clock.md);
    `OSSleepTicks` (7 sites) and scheduler/timer interrupts remain open.

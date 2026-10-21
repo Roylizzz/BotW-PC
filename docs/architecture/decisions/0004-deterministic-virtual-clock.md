@@ -79,12 +79,14 @@ Use one deterministic virtual-clock policy:
 
 ## Evidence
 
-- Native contract test: `tests/hle/test_hle.c`, 40 models including 64-bit
+- Native contract test: `tests/hle/test_hle.c`, 40 models at the time of this
+  decision (the later TLS model brings the registry to 41), including 64-bit
   `r3:r4` halves, system-info guest/host fields, epoch and negative calendar
   cases, untouched trailing bytes and reset.
 - Memory-map test: `tests/mem/run.js` maps the HLE page and reads the
   `OSSystemInfo` record through the real checked accessors (31 positive HLE
-  lines plus 4 HLE fault cases).
+  lines plus 4 HLE fault cases at the time; the current harness reports 36
+  positive lines and 5 fault cases after the TLS increment).
 - Real v208 strict runs: `0x030CB524` (11 instructions) calls
   `OSGetSystemInfo` and exits 0; its disassembly computes
   `busClockSpeed / 4 = 62,156,250` in r4 after zeroing r3 (a 64-bit pair; the

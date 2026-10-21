@@ -34,20 +34,21 @@ data is required or produced.
      access is refused before touching the target address;
    * **hook mode**: the registered fault hook runs between the diagnostic
      and the exit, for an unmapped access and for a read-only write;
-   * **HLE mode**: the coreinit memory/cache/clock models run with the region
-     map installed — `OSBlockMove` (non-overlapping, overlapping and a
+   * **HLE mode**: the coreinit memory/cache/clock/TLS models run with the
+     region map installed — `OSBlockMove` (non-overlapping, overlapping and a
      read-only source), `OSBlockSet`, `memcpy`, `memset`, block-granular
      `DCZeroRange`, the cache/barrier no-ops, `OSGetSystemInfo` with the
-     reserved HLE data page mapped and the exact-name/unknown lookup — plus
-     four child processes where a read-only destination, an unmapped
-     destination, an unmapped source and a read-only `DCZeroRange` block must
-     each exit 9 with the exact diagnostic;
+     reserved HLE data page mapped, a valid/invalid `TLSIndex` and the
+     exact-name/unknown lookup — plus five child processes where a read-only
+     destination, an unmapped destination, an unmapped source, a read-only
+     `DCZeroRange` block and an unmapped TLS index must each exit 9 with the
+     exact diagnostic;
    * **determinism**: the same fault twice produces byte-identical output.
 
 Expected output:
 
 ```
-mem: basic 36 lines, HLE 31 lines, raw 3 lines, 13 fault cases, 4 HLE fault cases, hook and determinism checks, compiled with <compiler>
+mem: basic 36 lines, HLE 36 lines, raw 3 lines, 13 fault cases, 5 HLE fault cases, hook and determinism checks, compiled with <compiler>
 mem: OK, checked accesses match the mapped regions and faults stop deterministically
 ```
 

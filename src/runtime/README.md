@@ -20,9 +20,9 @@ It provides:
 * diagnostics with full register context for untranslated instructions and
   unregistered targets,
 * the HLE entry point for imported system functions, with exact-name coreinit
-  core identity/flat-memory/cache models, the proc_ui lifecycle and explicit
-  diagnostics for everything else. This is not yet full Cafe OS or multi-core
-  scheduling.
+  core identity/flat-memory/cache/clock/system-info/TLS models, the proc_ui
+  lifecycle and explicit diagnostics for everything else. This is not yet
+  full Cafe OS, initialized TLS or multi-core scheduling.
 
 ## Build (local prototype)
 
@@ -263,6 +263,19 @@ prints `HLE modeled #1: coreinit.OSGetSystemTime (import 79), r3=0x00000000`
 imports resolve and the HLE data page is readable under the real image; the
 64-bit values and calendar fields are gated by the native and memory tests.
 
+The TLS resolver landed on 2026-10-20 under
+[ADR-0005](../architecture/decisions/0005-deterministic-tls.md). The image
+builder now applies the three `R_PPC_DTPMOD32` sites as module `1` and the
+three `R_PPC_DTPREL32` sites as offsets `4`, `8` and `0`; the runtime owns one
+zero-filled **0xF00-byte** block at `0x00090100` above the `OSSystemInfo`
+record. `coreinit.__tls_get_addr` validates the 8-byte `TLSIndex`, requires
+module 1 and an offset below 0xF00, and returns `0x00090100 + offset`; an
+unknown module or out-of-range offset returns 0. This is one module and one
+thread, not initialized `.tdata` or real per-thread storage. The 14-instruction
+v208 function at `0x03F92140` prints
+`HLE modeled #1: coreinit.__tls_get_addr (import 143), r3=0x00090104` and
+exits 0 under `PPCX_HLE_STRICT=1`.
+
 All other imports remain unimplemented, including filesystem, threading, GX2
 and the Wii Remote audio/motor path. In diagnostic mode they are counted but
 still return as no-ops (not a valid game execution path). Set
@@ -278,16 +291,17 @@ cc -std=c11 -Wall -Wextra -Werror -I src/runtime/include src/runtime/src/ppcx_hl
 ```
 
 The contract test runs on a raw host arena (`ppcx_mem_active` is 0, with a
-stubbed checker) and covers the 40 models, exact-name matching and register
+stubbed checker) and covers the 41 models, exact-name matching and register
 preservation, including the 64-bit clock returns, the system-info and
-calendar layouts, the proc_ui lifecycle, callback table and re-init, and
-the input init/read, touch, callback, motor, gyro and WPAD contracts. The
-compiled `tests/mem` harness links the same `ppcx_hle.c` with the real
-`ppcx_mem.c` and region map: it checks the copy, fill and block semantics,
-the reserved HLE data page and the guest `OSSystemInfo` record, and
-runs four extra child processes in which a read-only destination, an unmapped
-destination, an unmapped source and a read-only `DCZeroRange` block must each
-exit with code 9 and the exact diagnostic. The workflow is manual-only; dispatch
+calendar layouts, TLS resolution and reset, the proc_ui lifecycle, callback
+table and re-init, and the input init/read, touch, callback, motor, gyro and
+WPAD contracts. The compiled `tests/mem` harness links the same `ppcx_hle.c`
+with the real `ppcx_mem.c` and region map: it checks the copy, fill and block
+semantics, the reserved HLE data page, the guest `OSSystemInfo` record and
+valid/invalid TLS indices, and runs five extra child processes in which a
+read-only destination, an unmapped destination, an unmapped source, a
+read-only `DCZeroRange` block and an unmapped TLS index must each exit with
+code 9 and the exact diagnostic. The workflow is manual-only; dispatch
 it from the Actions tab. It runs the HLE contract test, `tests/mem` and the
 compiled ISA/loader/boot harnesses. Do not count modeled identity, memory/cache,
 lifecycle or input calls as evidence of full Cafe OS compatibility.

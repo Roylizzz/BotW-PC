@@ -12,7 +12,7 @@
  *      from the analyzed module — the same function the `translate` command
  *      uses (verified byte-identical on the real v208 dump);
  *   3. `buildImage`/`serializeImage` write the load blob with the
- *      R_PPC_ADDR32 relocations applied and the TLS sites deferred;
+ *      R_PPC_ADDR32 and TLS relocations applied;
  *   4. the real runtime, checked-memory model, image loader and HLE layer are
  *      compiled together with the generated unit and a small driver and
  *      booted headless (no game input, no window, no threads).
@@ -21,7 +21,7 @@
  *
  *   - boot:      entry -> memcpy -> helper -> address-taken OSBlockMove
  *                through the dispatcher trampoline; probes the .rodata
- *                relocations, the deferred TLS bytes and the guest writes;
+ *                relocations, the resolved TLS index and the guest writes;
  *   - tolerant:  an unmodeled import is a counted diagnostic no-op;
  *   - strict:    the same call stops with exit 5 and the register dump;
  *   - pointer:   a function only reachable through a .rodata code pointer;
@@ -367,16 +367,11 @@ function runBoot(opts = {}) {
         }
     }
     const applied = plan.relocations.applied;
-    if (
-        applied.length !== 1 ||
-        applied[0].type !== 1 ||
-        applied[0].count !== f.expected.appliedRelocations[0].count
-    ) {
+    if (JSON.stringify(applied) !== JSON.stringify(f.expected.appliedRelocations)) {
         failures.push({ id: "image.applied", detail: JSON.stringify(applied) });
     }
-    const deferred = plan.relocations.deferred.map((d) => ({ addr: d.addr, type: d.type }));
-    if (JSON.stringify(deferred) !== JSON.stringify(f.expected.deferredRelocations)) {
-        failures.push({ id: "image.deferred", detail: JSON.stringify(deferred) });
+    if (JSON.stringify(plan.tls.symbols) !== JSON.stringify(f.expected.tlsSymbols)) {
+        failures.push({ id: "image.tls", detail: JSON.stringify(plan.tls.symbols) });
     }
     if (plan.relocations.code !== f.expected.codeRelocations) {
         failures.push({

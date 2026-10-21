@@ -51,7 +51,10 @@ test("applies ADDR32 relocations with addends and counts them", () => {
     const data = plan.segments.find((s) => s.name === ".data");
     assert.ok(rodata.data.equals(expected.rodataAfterRelocs), "rodata bytes after relocation");
     assert.ok(data.data.equals(expected.dataAfterRelocs), "data bytes after relocation");
-    assert.deepEqual(plan.relocations.applied, expected.applied);
+    assert.deepEqual(
+        plan.relocations.applied.filter((r) => r.type === 1),
+        expected.applied.filter((r) => r.type === 1)
+    );
 });
 
 test("leaves executable-site relocations to the recompiler", () => {
@@ -63,17 +66,55 @@ test("leaves executable-site relocations to the recompiler", () => {
     assert.ok(plan.notes.some((n) => /executable sections belong to the recompiler/.test(n)));
 });
 
-test("defers TLS relocations, naming site and symbol", () => {
+test("applies TLS relocations for the deterministic main module", () => {
     const { buf, parsed, expected } = parsedFixture();
     const plan = buildImage(buf, parsed);
+    assert.deepEqual(plan.relocations.applied, expected.applied);
+    assert.deepEqual(plan.tls.symbols, expected.tlsSymbols);
+    assert.equal(plan.tls.module, 1);
+    assert.equal(plan.tls.blockBytes, 0xf00);
     assert.deepEqual(
-        plan.relocations.deferred.map((d) => [d.addr, d.type, d.symbol]),
-        expected.deferred.map((d) => [d.addr, d.type, "tls_value"])
+        plan.tls.sites.map((s) => [s.addr, s.type, s.symbol, s.value]),
+        [
+            [0x00020008, "R_PPC_DTPMOD32", "tls_value", 1],
+            [0x0002000c, "R_PPC_DTPREL32", "tls_value", 4],
+        ]
     );
     const rodata = plan.segments.find((s) => s.name === ".rodata");
     assert.equal(rodata.data.readUInt32BE(8), expected.rodataAfterRelocs.readUInt32BE(8));
     assert.equal(rodata.data.readUInt32BE(12), expected.rodataAfterRelocs.readUInt32BE(12));
-    assert.ok(plan.notes.some((n) => /TLS relocation site\(s\) are deferred/.test(n)));
+    assert.ok(plan.notes.some((n) => /TLS relocation site\(s\) applied for main module 1/.test(n)));
+});
+
+test("rejects a TLS relocation that references a non-TLS symbol", () => {
+    const { buf, layout } = fixture.build();
+    fixture.patchRela(buf, layout.relaEntry(".rela.rodata", 3), {
+        offset: 0x0002000c,
+        type: 78,
+        sym: 2,
+        addend: 0,
+    });
+    const parsed = rpxlib.parseRpx(buf);
+    assert.throws(
+        () => buildImage(buf, parsed),
+        (e) =>
+            e instanceof ImageError &&
+            e.issues.some((i) => /R_PPC_DTPREL32 at 0x0002000c references non-TLS symbol data_obj/.test(i))
+    );
+});
+
+test("rejects a TLS symbol in initialized storage", () => {
+    const { buf, layout } = fixture.build();
+    fixture.patchSymbol(buf, layout, 3, { shndx: 3 }); /* .data is PROGBITS */
+    const parsed = rpxlib.parseRpx(buf);
+    assert.throws(
+        () => buildImage(buf, parsed),
+        (e) =>
+            e instanceof ImageError &&
+            e.issues.some((i) =>
+                /references tls_value in initialized storage; only zero-filled thread BSS is modeled/.test(i)
+            )
+    );
 });
 
 test("notes uninterpreted section flags instead of dropping them", () => {

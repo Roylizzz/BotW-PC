@@ -77,8 +77,8 @@ The pipeline runs against the real module (9,248,515 words of `.text`):
 * `image` builds the load image of the same module in ~1.5 s: 31 segments,
   43,155,811 bytes (41,756,342 data + 1,399,469 BSS), 278,749
   `R_PPC_ADDR32` data relocations applied, 889,935 executable-section sites
-  left to the recompiler and 6 TLS sites deferred explicitly (see *Load
-  image* below).
+  left to the recompiler and 6 TLS sites applied for main module 1 (see
+  *Load image* below).
 * End-to-end demo: `FUN_031FA4CC` (`r3 = &UNK_031FA4C8; b ProcUIInit` in the
   v208 dump) translates to C, compiles with the local TCC and runs:
 
@@ -90,9 +90,9 @@ The pipeline runs against the real module (9,248,515 words of `.text`):
 
   `PPCX_HLE_TRACE=1` shows the modeled call. `ProcUIInit` is a void function,
   so `r3` still holds the save-callback argument by construction, not as a
-  documented return value. Forty exact-name calls are modeled (17
-  `coreinit` identity/memory/cache/clock calls, the five `proc_ui` lifecycle
-  calls and 18 `padscore`/`vpad`/`vpadbase` input calls in
+  documented return value. Forty-one exact-name calls are modeled (18
+  `coreinit` identity/memory/cache/clock/TLS calls, the five `proc_ui`
+  lifecycle calls and 18 `padscore`/`vpad`/`vpadbase` input calls in
   `src/runtime/src/ppcx_hle.c`); this entry now completes with exit code 0
   under `PPCX_HLE_STRICT=1`. Strict rejection of an unmodeled call is gated
   separately by the `tests/boot` scenario that calls
@@ -119,6 +119,15 @@ The pipeline runs against the real module (9,248,515 words of `.text`):
   low word is `0x000FCEA1`), stores both words at
   `0x105495A0/A4`, zeroes `0x105495A8/AC` and exits 0. The 64-bit returns and
   calendar fields are gated natively in `tests/hle`.
+
+  The TLS resolver was measured on 2026-10-20. `0x03F92140` (14
+  instructions) loads the `s_memoryRouter__14hkMemoryRouter` TLS index at
+  `0x1045CC14`, calls `coreinit.__tls_get_addr`, stores `r31` at the returned
+  pointer and returns it. With the rebuilt image, a strict/traced run prints
+  `HLE modeled #1: coreinit.__tls_get_addr (import 143),
+  r3=0x00090104` and exits 0. The model is one module and one zero-filled
+  0xF00-byte block at `0x00090100`; it is not threading or initialized TLS.
+  See [ADR-0005](../architecture/decisions/0005-deterministic-tls.md).
 
 Full notes, metrics and the remaining gaps towards a first GX2 frame are in
 `docs/research/2026-10-recompiler-prototype.md`.
@@ -158,8 +167,8 @@ materializes zlib sections, zero-fills NOBITS sections, applies the
 `R_PPC_ADDR32` data relocations, and writes `build/ppcx/image.bin` — a
 self-describing `PPCXIMG1` blob the runtime maps with bounds, ordering and
 checksum checks — plus `build/ppcx/image.json`, the manifest (RPX/blob
-digests, per-segment table, applied and deferred relocation counts, notes).
-Every segment record carries the BSS bit and the ELF writable bit
+digests, per-segment table, applied relocation counts and TLS metadata,
+notes). Every segment record carries the BSS bit and the ELF writable bit
 (`SHF_WRITE`), so the runtime installs the section permissions together with
 the address range.
 
@@ -169,13 +178,16 @@ Policy, explicit and never silent:
   translator: counted and left untouched, because code is translated from
   the file bytes, not relocated in memory;
 * `R_PPC_NONE` is counted and skipped;
-* TLS relocations (`R_PPC_DTPMOD32`/`R_PPC_DTPREL32`) are deferred and
-  listed with their addresses and symbol names (no TLS model yet);
+* TLS relocations are applied for the deterministic main module:
+  `R_PPC_DTPMOD32` writes module id `1`, `R_PPC_DTPREL32` writes
+  `symbol.value + addend`, and the builder rejects non-TLS symbols,
+  initialized-storage TLS symbols and offsets that do not fit the runtime's
+  0xF00-byte block;
 * any other relocation type fails the build, naming every offending site.
 
-Measured on v208 (2026-10-19): 31 segments, 43,155,811 bytes (41,756,342
-data + 1,399,469 BSS), 278,749 `R_PPC_ADDR32` applied, 889,935
-executable-section sites, 6 TLS sites deferred; 5 segments are writable
+Measured on v208 (2026-10-20): 31 segments, 43,155,811 bytes (41,756,342
+data + 1,399,469 BSS), 278,749 `R_PPC_ADDR32` applied, 3 `DTPMOD32` +
+3 `DTPREL32` applied, 889,935 executable-section sites; 5 segments are writable
 (`.rodata`, `.data`, `.module_id`, `.bss`, `.thrbss`; 6,140,245 bytes) and
 26 read-only (`.text`, `.syscall`, the import tables and the allocated
 metadata; 37,015,566 bytes). The blob (41,756,854 bytes) builds in ~1.5 s
@@ -219,13 +231,13 @@ stores themselves are implemented against the modelled GQRs with the
 reference semantics; because the game never writes HID2 but executes `psq_*`
 from the start, the model boots with `HID2.LSQE` set (documented assumption).
 The load image maps executable sections for data fidelity only; their
-relocation sites stay at link-time values and TLS relocation sites are
-deferred (see *Load image*).
+relocation sites stay at link-time values while TLS sites are resolved for the
+deterministic main module (see *Load image*).
 
 ## Tests
 
 ```sh
-cd tools/ppcx && npm test                                       # 97 decoder/translator/image cases
+cd tools/ppcx && npm test                                       # 107 decoder/translator/image cases
 # from the repository root: compiled harnesses (need a C compiler)
 node --test "tests/isa/*.test.js" "tests/loader/*.test.js" "tests/mem/*.test.js" "tests/boot/*.test.js" "tools/ppcx/tests/*.test.js"
 ```
@@ -254,17 +266,17 @@ boundary/unaligned/host accesses, thirteen illegal accesses (nine outside
 every region and four writes to a read-only one) each failing in its own
 process with exit code 9 and an exact diagnostic, the fault hook and
 run-to-run determinism. The HLE part checks the memory/cache models under
-the same map (31 positive lines: `OSBlockMove` non-overlapping and
+the same map (36 positive lines: `OSBlockMove` non-overlapping and
 overlapping, `OSBlockSet`, `memcpy`, `memset`, block-granular
 `DCZeroRange`, cache/barrier no-ops, the mapped `OSGetSystemInfo`
-system-info record, read-only source) and four HLE fault
-processes (read-only destination, unmapped destination, unmapped source,
-read-only `DCZeroRange` block) (`node tests/mem/run.js` → `mem: OK`; the
-job runs in CI).
+system-info record, the valid/invalid TLS index cases, read-only source) and
+five HLE fault processes (read-only destination, unmapped destination,
+unmapped source, read-only `DCZeroRange` block, unmapped TLS index)
+(`node tests/mem/run.js` → `mem: OK`; the job runs in CI).
 
 The synthetic boot harness (`tests/boot`) authors a game-free RPX (nine
 functions plus an inline three-entry `b`-table, eight imports, relocated
-`.rodata` pointers, two deferred TLS sites, `.data`/`.bss`), runs it through
+`.rodata` pointers, two applied TLS sites, `.data`/`.bss`), runs it through
 the real `analyze` → `translateModule` → `buildImage`/`serializeImage` path,
 compiles the generated unit with the real runtime, checked-memory model,
 image loader and HLE layer, and boots it headless in nine scenarios: modeled
@@ -289,11 +301,12 @@ scenario additionally gates the cross-range start fixpoint (pre-fixpoint
 analyzer → 14 failures, including the runtime exit 4 at `0x000100F0`).
 
 The native HLE contract test (`tests/hle/test_hle.c`, compiled with
-`cc -Wall -Wextra -Werror` in CI) covers the 40 modeled calls (17 coreinit
-identity/memory/cache/clock, five proc_ui lifecycle and 18 input models),
+`cc -Wall -Wextra -Werror` in CI) covers the 41 modeled calls (18 coreinit
+identity/memory/cache/clock/TLS, five proc_ui lifecycle and 18 input models),
 exact-name matching, register preservation, the 64-bit `r3:r4` clock returns,
-the 0x20-byte system-info and 0x28-byte calendar layouts and the
-`OSBlockMove` overlap guarantee on a raw arena.
+the 0x20-byte system-info and 0x28-byte calendar layouts, TLS index
+resolution/invalid indices and the `OSBlockMove` overlap guarantee on a raw
+arena.
 
 All tests use only synthetic instruction sequences, synthetic import tables
 and synthetic RPX fixtures; no game data is required.

@@ -519,6 +519,126 @@ static int test_clock_models(void) {
     return 0;
 }
 
+static int test_tls_model(void) {
+    const u32 index = 0x800u;
+    const PpcxTlsState *s;
+    Cpu cpu;
+    unsigned i;
+
+    /* Reset clears both the counters and the zero-filled TLS block. */
+    memset(arena + PPCX_TLS_DATA_ADDR, 0xaa, PPCX_TLS_DATA_SIZE);
+    ppcx_hle_tls_reset();
+    s = ppcx_hle_tls_state();
+    if (s->calls != 0u || s->resolved != 0u || s->invalid_module != 0u ||
+        s->invalid_offset != 0u || s->last_index_ea != 0u || s->last_result != 0u) {
+        return fail("TLS reset did not clear state");
+    }
+    for (i = 0; i < PPCX_TLS_DATA_SIZE; i++) {
+        if (arena[PPCX_TLS_DATA_ADDR + i] != 0u) return fail("TLS reset did not clear block");
+    }
+
+    /* A valid index returns block + offset; the returned memory is writable
+     * and distinct for different offsets. */
+    ppcx_wr32(index + 0u, PPCX_TLS_MODULE_ID);
+    ppcx_wr32(index + 4u, 4u);
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = index;
+    if (check_dispatch_r3("coreinit.__tls_get_addr", &cpu,
+                          PPCX_TLS_DATA_ADDR + 4u) != 0) {
+        return 1;
+    }
+    ppcx_wr32(cpu.gpr[3], 0x12345678u);
+    s = ppcx_hle_tls_state();
+    if (s->calls != 1u || s->resolved != 1u || s->invalid_module != 0u ||
+        s->invalid_offset != 0u || s->last_index_ea != index ||
+        s->last_module != PPCX_TLS_MODULE_ID || s->last_offset != 4u ||
+        s->last_result != PPCX_TLS_DATA_ADDR + 4u) {
+        return fail("TLS first resolution state");
+    }
+    if (ppcx_rd32(PPCX_TLS_DATA_ADDR + 4u) != 0x12345678u) {
+        return fail("TLS returned pointer is not writable");
+    }
+
+    ppcx_wr32(index + 4u, 0u);
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = index;
+    if (check_dispatch_r3("coreinit.__tls_get_addr", &cpu,
+                          PPCX_TLS_DATA_ADDR) != 0) {
+        return 1;
+    }
+    ppcx_wr32(cpu.gpr[3], 0xabcdef01u);
+    if (ppcx_rd32(PPCX_TLS_DATA_ADDR + 4u) != 0x12345678u) {
+        return fail("TLS variables alias");
+    }
+
+    ppcx_wr32(index + 4u, 8u);
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = index;
+    if (check_dispatch_r3("coreinit.__tls_get_addr", &cpu,
+                          PPCX_TLS_DATA_ADDR + 8u) != 0) {
+        return 1;
+    }
+    ppcx_wr32(cpu.gpr[3], 0x0badf00du);
+    s = ppcx_hle_tls_state();
+    if (s->calls != 3u || s->resolved != 3u ||
+        ppcx_rd32(PPCX_TLS_DATA_ADDR) != 0xabcdef01u ||
+        ppcx_rd32(PPCX_TLS_DATA_ADDR + 8u) != 0x0badf00du) {
+        return fail("TLS third resolution state");
+    }
+
+    /* Unknown module and out-of-range offsets return NULL, not a wild
+     * pointer, and leave the valid block untouched. */
+    ppcx_wr32(index + 0u, PPCX_TLS_MODULE_ID + 1u);
+    ppcx_wr32(index + 4u, 4u);
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = index;
+    if (check_dispatch_r3("coreinit.__tls_get_addr", &cpu, 0u) != 0) return 1;
+    s = ppcx_hle_tls_state();
+    if (s->calls != 4u || s->resolved != 3u || s->invalid_module != 1u ||
+        s->invalid_offset != 0u || s->last_module != PPCX_TLS_MODULE_ID + 1u ||
+        s->last_offset != 4u || s->last_result != 0u) {
+        return fail("TLS invalid module state");
+    }
+
+    ppcx_wr32(index + 0u, PPCX_TLS_MODULE_ID);
+    ppcx_wr32(index + 4u, PPCX_TLS_DATA_SIZE);
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = index;
+    if (check_dispatch_r3("coreinit.__tls_get_addr", &cpu, 0u) != 0) return 1;
+    s = ppcx_hle_tls_state();
+    if (s->calls != 5u || s->resolved != 3u || s->invalid_offset != 1u ||
+        s->last_offset != PPCX_TLS_DATA_SIZE || s->last_result != 0u) {
+        return fail("TLS invalid offset state");
+    }
+
+    /* The last aligned word is still valid and writable. */
+    ppcx_wr32(index + 4u, PPCX_TLS_DATA_SIZE - 4u);
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = index;
+    if (check_dispatch_r3("coreinit.__tls_get_addr", &cpu,
+                          PPCX_TLS_DATA_ADDR + PPCX_TLS_DATA_SIZE - 4u) != 0) {
+        return 1;
+    }
+    ppcx_wr32(cpu.gpr[3], 0x13579bdfu);
+    s = ppcx_hle_tls_state();
+    if (s->calls != 6u || s->resolved != 4u ||
+        ppcx_rd32(PPCX_TLS_DATA_ADDR + PPCX_TLS_DATA_SIZE - 4u) != 0x13579bdfu) {
+        return fail("TLS last-word state");
+    }
+
+    ppcx_hle_tls_reset();
+    s = ppcx_hle_tls_state();
+    if (s->calls != 0u || s->resolved != 0u || s->invalid_module != 0u ||
+        s->invalid_offset != 0u || s->last_index_ea != 0u || s->last_result != 0u) {
+        return fail("TLS final reset state");
+    }
+    if (ppcx_rd32(PPCX_TLS_DATA_ADDR) != 0u ||
+        ppcx_rd32(PPCX_TLS_DATA_ADDR + PPCX_TLS_DATA_SIZE - 4u) != 0u) {
+        return fail("TLS final reset block");
+    }
+    return 0;
+}
+
 static int test_input_models(void) {
     static const char *const gyro_noops[] = {
         "vpad.VPADEnableGyroAccRevise",
@@ -851,6 +971,8 @@ static int test_exact_names(void) {
     if (ppcx_hle_dispatch_named(&cpu, "coreinit.OSGetSystemTimeEx") != 0) return fail("non-exact clock import accepted");
     if (ppcx_hle_dispatch_named(&cpu, "coreinit.OSGetSystemInfoEx") != 0) return fail("non-exact system-info import accepted");
     if (ppcx_hle_dispatch_named(&cpu, "other.OSGetSystemTime") != 0) return fail("incorrect clock module accepted");
+    if (ppcx_hle_dispatch_named(&cpu, "coreinit.__tls_get_addrX") != 0) return fail("non-exact TLS import accepted");
+    if (ppcx_hle_dispatch_named(&cpu, "other.__tls_get_addr") != 0) return fail("incorrect TLS module accepted");
     if (ppcx_hle_dispatch_named(&cpu, "coreinit.OSGetTick") != 0) return fail("unmodeled OSGetTick accepted");
     if (ppcx_hle_dispatch_named(&cpu, "padscore.KPADRead") != 0) return fail("unmodeled KPADRead accepted");
     if (ppcx_hle_dispatch_named(&cpu, "vpad.VPADInit") != 0) return fail("unmodeled VPADInit accepted");
@@ -871,8 +993,9 @@ int main(void) {
     if (test_cache_and_barrier() != 0) return 1;
     if (test_procui_lifecycle() != 0) return 1;
     if (test_clock_models() != 0) return 1;
+    if (test_tls_model() != 0) return 1;
     if (test_input_models() != 0) return 1;
     if (test_exact_names() != 0) return 1;
-    puts("hle: core identity, memory/cache, proc_ui lifecycle, virtual clock/system info and input models, exact matching and register preservation OK");
+    puts("hle: core identity, memory/cache, proc_ui lifecycle, virtual clock/system info, TLS and input models, exact matching and register preservation OK");
     return 0;
 }

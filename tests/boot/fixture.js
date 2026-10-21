@@ -20,7 +20,7 @@
  *     one REL24 call site per function and an ADDR16_HA/LO pair for the
  *     address-taken `OSBlockMove`;
  *   - `.rodata` with three `R_PPC_ADDR32` pointers (one with an addend) and
- *     two deferred TLS relocations (`R_PPC_DTPMOD32`/`R_PPC_DTPREL32`),
+ *     two applied TLS relocations (`R_PPC_DTPMOD32`/`R_PPC_DTPREL32`),
  *     `.data` with authored words and a NOBITS `.bss`;
  *   - the allocated metadata trio (`.shstrtab`/`.symtab`/`.strtab`) and a
  *     non-allocated `.comment` that must not be mapped.
@@ -384,13 +384,13 @@ function build() {
     if (text.words.length * 4 > TEXT_SIZE) throw new Error("program overflows .text");
 
     /* .rodata: two relocated pointers and a pointer with an addend, then the
-     * two TLS slots the image tool must leave untouched. */
+     * two TLS slots the image tool resolves for the main module. */
     const rodataBytes = Buffer.alloc(RODATA_SIZE);
     writeU32(rodataBytes, 0x00, DATA_ADDR); /* R_PPC_ADDR32 data_obj */
     writeU32(rodataBytes, 0x04, entries.pointer); /* R_PPC_ADDR32 func_d */
     writeU32(rodataBytes, 0x08, DATA_ADDR + 8); /* R_PPC_ADDR32 data_obj + 8 */
-    writeU32(rodataBytes, 0x0c, 0xdddddddd); /* R_PPC_DTPMOD32 (deferred) */
-    writeU32(rodataBytes, 0x10, 0xeeeeeeee); /* R_PPC_DTPREL32 (deferred) */
+    writeU32(rodataBytes, 0x0c, 0xdddddddd); /* R_PPC_DTPMOD32 (overwritten with 1) */
+    writeU32(rodataBytes, 0x10, 0xeeeeeeee); /* R_PPC_DTPREL32 (overwritten with 4) */
 
     const dataBytes = Buffer.alloc(DATA_SIZE);
     [0x11223344, 0x55667788, 0xaabbccdd, 0xdeadbeef].forEach((w, i) => writeU32(dataBytes, i * 4, w));
@@ -423,7 +423,7 @@ function build() {
         { name: "ProcUIDrawDoneRelease", value: SLOT_PROCUIDRAWDONERELEASE, size: 8, info: 0x12, shndx: 3 },
         { name: "ProcUIRegisterCallback", value: SLOT_PROCUIREGISTERCALLBACK, size: 8, info: 0x12, shndx: 3 },
         { name: "ProcUIShutdown", value: SLOT_PROCUISHUTDOWN, size: 8, info: 0x12, shndx: 3 },
-        { name: "tls_value", value: BSS_ADDR, size: 4, info: 0x11, shndx: 6 },
+        { name: "tls_value", value: 0, size: 4, info: 0x16, shndx: 6 },
         { name: "func_e", value: entries.split, size: 0x10, info: 0x12, shndx: 1 },
         { name: "func_t", value: entries.tail, size: 0x20, info: 0x12, shndx: 1 },
         { name: "func_s", value: entries.switch, size: 0x6c, info: 0x12, shndx: 1 },
@@ -444,7 +444,7 @@ function build() {
         writeU16(symtab, o + 14, s.shndx);
     });
 
-    /* Relocations: the three data pointers and the two deferred TLS sites. */
+    /* Relocations: the three data pointers and the two TLS sites. */
     const relaEntry = ({ offset, type, sym, addend }) => ({ offset, type, sym, addend: addend || 0 });
     const relaRoData = Buffer.alloc(5 * 12);
     [
@@ -452,7 +452,7 @@ function build() {
         relaEntry({ offset: RODATA_ADDR + 0x04, type: 1, sym: SYM.func_d, addend: 0 }),
         relaEntry({ offset: RODATA_ADDR + 0x08, type: 1, sym: SYM.data_obj, addend: 8 }),
         relaEntry({ offset: RODATA_ADDR + 0x0c, type: 68, sym: SYM.tls_value, addend: 0 }),
-        relaEntry({ offset: RODATA_ADDR + 0x10, type: 78, sym: SYM.tls_value, addend: 0 }),
+        relaEntry({ offset: RODATA_ADDR + 0x10, type: 78, sym: SYM.tls_value, addend: 4 }),
     ].forEach((r, i) => {
         const o = i * 12;
         writeU32(relaRoData, o, r.offset);
@@ -594,18 +594,19 @@ function build() {
             bytes,
             bssBytes,
             payloadBytes: bytes - bssBytes,
-            appliedRelocations: [{ type: 1, name: "R_PPC_ADDR32", count: 3 }],
-            deferredRelocations: [
-                { addr: RODATA_ADDR + 0x0c, type: 68 },
-                { addr: RODATA_ADDR + 0x10, type: 78 },
+            appliedRelocations: [
+                { type: 1, name: "R_PPC_ADDR32", count: 3 },
+                { type: 68, name: "R_PPC_DTPMOD32", count: 1 },
+                { type: 78, name: "R_PPC_DTPREL32", count: 1 },
             ],
+            tlsSymbols: [{ name: "tls_value", offset: 4, size: 4 }],
             codeRelocations: text.relocs.length,
             probes: [
                 { name: "rodata-data-ptr", addr: RODATA_ADDR + 0x00, value: DATA_ADDR },
                 { name: "rodata-func-ptr", addr: RODATA_ADDR + 0x04, value: ENTRY.pointer },
                 { name: "rodata-data-plus8", addr: RODATA_ADDR + 0x08, value: DATA_ADDR + 8 },
-                { name: "rodata-tls-mod", addr: RODATA_ADDR + 0x0c, value: 0xdddddddd },
-                { name: "rodata-tls-off", addr: RODATA_ADDR + 0x10, value: 0xeeeeeeee },
+                { name: "rodata-tls-mod", addr: RODATA_ADDR + 0x0c, value: 1 },
+                { name: "rodata-tls-off", addr: RODATA_ADDR + 0x10, value: 4 },
                 { name: "data-0", addr: DATA_ADDR + 0x00, value: 0x11223344 },
                 { name: "data-1", addr: DATA_ADDR + 0x04, value: 0x55667788 },
                 { name: "data-2", addr: DATA_ADDR + 0x08, value: 0xaabbccdd },

@@ -517,6 +517,7 @@ function cmdImage(args) {
         checksum: readImageBlob(blob).checksum,
         stats: plan.stats,
         relocations: plan.relocations,
+        tls: plan.tls,
         segments: plan.segments.map((s) => ({
             name: s.name,
             addr: s.addr,
@@ -535,10 +536,14 @@ function cmdImage(args) {
     for (const r of plan.relocations.applied) {
         console.log(`relocs:    ${r.count} applied (${r.name})`);
     }
-    console.log(`relocs:    ${plan.relocations.deferred.length} deferred (TLS), ` +
-        `${plan.relocations.code} in executable sections (recompiler), ${plan.relocations.none} none`);
-    for (const d of plan.relocations.deferred.slice(0, 10)) {
-        console.log(`  deferred: ${d.name} at 0x${hex8(d.addr)} (${d.section}, ${d.symbol || "no symbol"})`);
+    console.log(`relocs:    ${plan.relocations.code} in executable sections (recompiler), ` +
+        `${plan.relocations.none} none`);
+    if (plan.tls.sites.length > 0) {
+        console.log(`tls:       main module ${plan.tls.module}, block ${plan.tls.blockBytes} bytes`);
+        for (const s of plan.tls.sites.slice(0, 10)) {
+            console.log(`  tls: ${s.type} at 0x${hex8(s.addr)} (${s.section}, ` +
+                `${s.symbol || "no symbol"} -> 0x${hex8(s.value)})`);
+        }
     }
     for (const n of plan.notes) console.log(`note:      ${n}`);
     console.log(`wrote      ${binPath} (${blob.length} bytes, sha256 ${blobSha.slice(0, 16)}...)`);

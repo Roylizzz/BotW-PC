@@ -129,8 +129,8 @@ first GX2 frame?
 
    `PPCX_HLE_TRACE=1` logs the modeled call. `ProcUIInit` is void, so
    `r3 = 0x031FA4C8` is the save-callback argument left untouched by the
-   model, not a documented return value. Forty exact-name calls are
-   modeled (17 coreinit identity/memory/cache/clock, the five proc_ui
+   model, not a documented return value. Forty-one exact-name calls are
+   modeled (18 coreinit identity/memory/cache/clock/TLS, the five proc_ui
    lifecycle calls and 18 input calls), so this entry now completes with exit code 0
    under `PPCX_HLE_STRICT=1`; strict rejection is gated separately by the boot
    fixture's unmodeled `coreinit.OSSleepTicks` call (exit 5). This exercises
@@ -162,10 +162,10 @@ first GX2 frame?
    `baseTime` = epoch, zero reserved bytes). `OSTicksToCalendarTime` writes
    the ten 0x28-byte `OSCalendarTime` fields in UTC and clamps negative
    inputs to 2000-01-01; `OSSleepTicks` (7 sites) remains unmodeled because
-   it needs a scheduler. `tests/hle` now covers 40 models, including the
-   64-bit `r3:r4` returns, the system-info and calendar layouts and reset;
-   `tests/mem` verifies the record through the real region map (31 positive
-   HLE lines). Two real v208 paths run under strict mode with the same
+   it needs a scheduler. `tests/hle` now covers 41 models, including the
+   64-bit `r3:r4` returns, the system-info and calendar layouts, TLS
+   resolution and reset; `tests/mem` verifies the record and the TLS cases
+   through the real region map (36 positive HLE lines). Two real v208 paths run under strict mode with the same
    image: `0x030CB524` (11 instructions, only `OSGetSystemInfo`) prints
    `r3=0x00090000` and exits 0; its disassembly computes
    `busClockSpeed / 4 = 62,156,250` in r4 after zeroing r3, so the result is
@@ -175,6 +175,24 @@ first GX2 frame?
    `0x105495A8/AC`, and exits 0. The clock policy is recorded in
    [ADR-0004](../architecture/decisions/0004-deterministic-virtual-clock.md).
 
+   The TLS block landed on 2026-10-20. The module calls
+   `coreinit.__tls_get_addr` from 3,371 REL24 sites in 2,770 functions and
+   carries three `TLSIndex` objects in `.rodata`: `0x1045CC14`
+   (`s_memoryRouter__14hkMemoryRouter`, offset 4), `0x1045CC1C`
+   (`hkMonitorStream__m_instance`, offset 8) and `0x1045CC24`
+   (`hkThreadNumber`, offset 0). The six relocations are three
+   `R_PPC_DTPMOD32` and three `R_PPC_DTPREL32`; the builder now writes module
+   `1` and the measured plain offsets, without the generic PowerPC `-0x8000`
+   DTP bias. The resolver validates the 8-byte index and returns a pointer
+   into one zero-filled 0xF00-byte block at `0x00090100`, above the
+   `OSSystemInfo` record. Unknown modules and out-of-range offsets return 0.
+   This is one module and one thread, not `.tdata` or per-thread storage; the
+   policy is [ADR-0005](../architecture/decisions/0005-deterministic-tls.md).
+   `tests/hle` covers resolution/reset/invalid indices, `tests/mem` covers a
+   valid index and an unmapped-index fault, and the real v208 function at
+   `0x03F92140` (14 instructions) returns `r3=0x00090104` with one modeled
+   call and strict exit 0.
+
 7. **Runtime skeleton.** One flat arena of `0xC2000000` bytes covers every
    address the module is linked for (import slots sit at `0xC0000000`);
    dispatch is a binary search over the generated registry; address-taken
@@ -183,8 +201,8 @@ first GX2 frame?
    `~0x105DB1C0`); unsupported instructions and unregistered targets stop
    with an address + register dump. `PPCX_HLE_TRACE=1` logs every HLE call,
    `PPCX_HLE_STRICT=1` aborts on the first unimplemented one (exit code 5);
-   40 exact-name calls are modeled (17 coreinit identity/memory/cache/clock,
-   five proc_ui lifecycle and 18 input calls) and stay available.
+   41 exact-name calls are modeled (18 coreinit identity/memory/cache/clock/
+   TLS, five proc_ui lifecycle and 18 input calls) and stay available.
 
 8. **Audit correction pass (2026-10-18).** An independent source audit fixed
    thirteen semantic defects in the runtime ABI, the decoder and the
@@ -233,7 +251,7 @@ first GX2 frame?
    plus an inline three-entry `b`-table and three case bodies, eight imports —
    `coreinit.memcpy` called directly, `OSBlockMove` taken by address,
    `coreinit.OSSleepTicks` left unmodeled, and all five proc_ui lifecycle
-   calls — three relocated `.rodata` pointers with one addend, two deferred
+   calls — three relocated `.rodata` pointers with one addend, two applied
    TLS sites, `.data`/`.bss` and the allocated metadata trio), runs the real
    `analyze` → `translateModule` → `buildImage` pipeline and compiles the
    result with the real runtime, checked-memory model and HLE layer. Nine
@@ -248,7 +266,7 @@ first GX2 frame?
    proc_ui lifecycle calls ending with a post-shutdown `EXITING` status
    (`r3 = 0x47`), a read outside every region (exit 9) and the same boot
    without `PPCX_IMAGE` (fault at the first data read instead of zeroes);
-   guest probes assert the applied relocations, the untouched TLS bytes and
+   guest probes assert the applied relocations, the resolved TLS index and
    the two copied words in `.data`/`.bss`, and the boot run must repeat
    byte-identically. `node tests/boot/run.js` → `boot: 9 scenarios (7 entries
    compiled), 50 transcript lines, 72 memory probe lines … boot: OK, the
@@ -356,8 +374,9 @@ first GX2 frame?
 - **Observed:** all metrics above, produced by our tools on our own copy
   (coverage re-measured 2026-10-19 after the paired-single implementation;
   the 2026-10-18 audit checkpoint read 97.71%); the loader-image metrics
-  (31 segments, 43,155,811 bytes, 278,749 applied relocations, 6 deferred
-  TLS sites) come from an `image` run pinned to the recorded v208 SHA-256;
+  (31 segments, 43,155,811 bytes, 278,749 applied `ADDR32` relocations and 6
+  applied TLS relocations) come from an `image` run pinned to the recorded
+  v208 SHA-256;
   the Ghidra census is a local comparison artifact only.
 - **Derived:** the interpretation of `.rodata` ADDR32 entries as code
   pointers (validated by sampling), and the tail-call reading of
@@ -372,9 +391,9 @@ first GX2 frame?
 - **Data image:** implemented 2026-10-19 — `tools/ppcx image` validates and
   serializes every allocated section of the module (31 sections,
   43,155,811 bytes including the 1,399,469-byte `.bss`), applies the 278,749
-  `R_PPC_ADDR32` data relocations, leaves the 889,935 executable-section
-  relocations to the recompiler and defers the 6 TLS sites explicitly; the
-  runtime maps the blob with bounds/order/checksum checks
+  `R_PPC_ADDR32` data relocations and the 6 TLS relocations for main module
+  1, and leaves the 889,935 executable-section relocations to the recompiler;
+  the runtime maps the blob with bounds/order/checksum checks
   (`src/runtime/src/ppcx_image.c`). Data slots that point into import slots
   are not observed in v208 and stay unmodelled. What remains for this item
   is the *code* that walks the loaded tables (HLE tier 1 below), not the
@@ -422,8 +441,11 @@ first GX2 frame?
   clock/system-info calls landed 2026-10-20 under
   [ADR-0004](../architecture/decisions/0004-deterministic-virtual-clock.md)
   (510 REL24 + 2 address-taken sites; see item 6), leaving `OSSleepTicks` and
-  the scheduler for later. Remaining tier 1 work:
-  TLS (`__tls_get_addr`, 3,371 sites) and the `_iob` /
+  the scheduler for later. The TLS resolver (`__tls_get_addr`, 3,371 sites)
+  landed 2026-10-20 under
+  [ADR-0005](../architecture/decisions/0005-deterministic-tls.md) as one
+  zero-filled main-module block at `0x00090100`; `.tdata`, threads and
+  per-thread copies remain open. Remaining tier 1 work: the `_iob` /
   `__gh_FOPEN_MAX` data slots; then filesystem and threading models.
 - **GX2 bootstrap:** drive the documented chain (entry `0x03C70404` →
   `FUN_02c5e5f4` → … → `FUN_0309bbb0`, the only `GX2Init` site at

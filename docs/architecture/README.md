@@ -30,3 +30,5 @@ Significant decisions are recorded as short ADRs in `decisions/`:
   (accepted on 2026-10-20)
 - [0004 — Deterministic virtual clock and system-info policy for headless runs](decisions/0004-deterministic-virtual-clock.md)
   (accepted on 2026-10-20)
+- [0005 — Deterministic single-module TLS for headless runs](decisions/0005-deterministic-tls.md)
+  (accepted on 2026-10-20)
