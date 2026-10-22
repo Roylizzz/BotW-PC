@@ -95,16 +95,24 @@ option A is no longer hypothetical — least of all on Wii U. Full write-up:
   an RPX analyzer (with a Ghidra export script), an offline PPC→C++
   recompiler and a Cafe OS HLE runtime skeleton. License: reading
   material only for this MIT repository.
-- **On this exact game.** A private Wii U "lifter" prototype with BotW
-  reportedly playable (bugs/perf pending) was demonstrated in 2026; no
-  public repository yet — informal proof of feasibility on this title.
+- **On this exact game.** Public exact-v208 projects existed by
+  2026-10-22: `IshaanKalra2103/BotWRecomp` (MIT + Cemu MPL-2.0;
+  macOS/iOS; author reports playable) covers **424 of our 437 function
+  imports**, and `P1kaCat/Breath-of-The-Wild-Compiled` (Windows;
+  MPL-2.0 + DolRecomp GPL-3.0) renders the opening screen and the start
+  of the intro but is not playable. Feasibility on this title is no longer
+  informal. See
+  [`docs/research/2026-10-22-botw-decompilation-and-recompilation.md`](../../research/2026-10-22-botw-decompilation-and-recompilation.md).
 - **Naming material for the same game version.** `zeldaret/botw` publishes
-  a names-only function database for Switch 1.5.0 (113,490 entries;
-  72,243 named — fetched and verified locally 2026-10-18) — the same
-  release family as our Wii U v208 target. Our RPX itself is stripped
-  (483 symbols — sections and imports only, verified with `tools/rpxinfo`).
-  The database provides vocabulary (`sead::GameFrameworkNx`,
-  `uking::frm::RootTask`, …) and is fetched locally, never committed.
+  a names-only function database for Switch 1.5.0 (113,491 entries;
+  84,442 named — refetched locally 2026-10-22) — the same release family
+  as our Wii U v208 target. The decompilation is now at 32.794% of
+  functions / 20.264% of bytes. Our RPX itself is stripped (483 symbols —
+  sections and imports only, verified with `tools/rpxinfo`). The database
+  provides vocabulary (`sead::GameFrameworkNx`, `uking::frm::RootTask`, …)
+  and is fetched locally, never committed. The decompilation repository
+  has **no license file**, so it is reference-only; no source or headers
+  are copied.
 - **PowerPC static recompilation is a solved pattern beyond Wii U.**
   XenonRecomp (MIT) + UnleashedRecomp (GPL-3.0) did it for the Xbox 360
   (also big-endian PowerPC) with documented lessons on function
@@ -154,6 +162,28 @@ Evidence at decision time (the items previously listed as pending):
   (`psq_l`/`psq_st` and the indexed forms) is implemented and differentially
   tested (2026-10-19), and big-endian memory plus single-threaded
   reservations are modelled in the runtime.
+
+## Post-decision update (2026-10-22): public exact-v208 implementations
+
+The accepted architecture does **not** change. The build-vs-adopt question
+does, and it now needs an explicit maintainer decision before any code is
+imported:
+
+- `IshaanKalra2103/BotWRecomp` is an MIT + Cemu MPL-2.0 implementation of
+  this exact v208 binary. It registers 488 HLE names and covers 424/437 of
+  our function imports; its README reports playable iPhone/Mac results.
+  It is macOS/Metal-only, has a one-commit history and says it was built
+  with Claude Code. Provenance must be audited before reuse.
+- `P1kaCat/Breath-of-The-Wild-Compiled` is the closest Windows codebase
+  but bundles DolRecomp GPL-3.0; it cannot donate code to this MIT repo.
+- `zeldaret/botw` remains reference-only (no license, Switch build).
+
+Options for the maintainer: (A) continue the independent clean-room
+runtime; (B) audit and adapt the MIT exact-v208 recompiler/runtime behind a
+new Windows backend; (C) collaborate with the Windows GPL line behind a
+separate license boundary. Until one is chosen, no public project's code is
+merged. The survey and evidence are in
+[`docs/research/2026-10-22-botw-decompilation-and-recompilation.md`](../../research/2026-10-22-botw-decompilation-and-recompilation.md).
 
 ## Consequences
 

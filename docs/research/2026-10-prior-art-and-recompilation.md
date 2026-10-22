@@ -1,6 +1,7 @@
 # Prior art reconnaissance: recompilation, decompilation and Wii U ports
 
-- **Date:** 2026-10-18
+- **Date:** 2026-10-18; **updated 2026-10-22** after public exact-v208
+  projects were found.
 - **Scope:** survey of public projects that do the same class of work as
   BotW-PC, and what their state (as observed today) means for our Phase 2
   decision. Written in response to: "you could save time by studying port
@@ -23,16 +24,23 @@ This note records the findings; the ADR records the recommendation.
 - **What it is:** matching decompilation of *Breath of the Wild*
   **v1.5.0 (Switch)**. ~2.3k stars, active. Explicitly *not* a port
   ("Porting the game to other platforms is explicitly a non-goal",
-  <https://botw.link/about>).
+  <https://botw.link/about>). On 2026-10-22 the progress badges report
+  **32.794% of functions and 20.264% of bytes** — further along than the
+  "very early" label in the original survey.
+- **License:** the repository has **no `LICENSE`/`COPYING` file** and
+  GitHub reports no license. Default copyright therefore applies: source
+  and headers are reference-only, not donor code.
 - **Why it matters to us anyway:**
   - **Same game version.** Our target is the Wii U update **v208**, which
     corresponds to the **1.5.0** release family — the same game version the
     decompilation targets.
   - **Names-only function database.** The repository publishes
-    `data/uking_functions.csv` — fetched and inspected locally on
-    2026-10-18: **113,490 entries, 72,243 with names** (50,237 of them
-    mangled C++ names), plus quality codes. Also `data_symbols.csv`
-    (data symbols) and `as_element_vtables.yml` (vtable layouts).
+    `data/uking_functions.csv` — refetched and inspected locally on
+    2026-10-22: **113,491 entries, 84,442 with names** (58,357 of them
+    mangled C++ names), plus quality codes. The older 113,490 / 72,243
+    counts in this note were from 2026-10-18 and are superseded. Also
+    `data_symbols.csv` (data symbols) and `as_element_vtables.yml` (vtable
+    layouts).
   - The database names the exact framework structures our own RE has been
     mapping on the Wii U binary — e.g. `uking::frm::RootTask`
     (`prepare` 432 B, `enter`, `calc` 3,908 B, `exit`, `dtor`),
@@ -87,13 +95,34 @@ class of port. Summary of the moving parts:
 - **License note:** GPL-3.0. For this MIT repository it is *reading
   material*, not a code donor.
 
-## 4. Same game, unreleased prototype ("Mindstormman")
+## 4. Same game, public exact-v208 recompilations (2026-10-22 update)
 
-Multiple outlets (2026) report a private Wii U "lifter" with **BotW
-playable in prototype form** (bugs and performance pending), also tried on
-Super Mario 3D World, Mario Kart 8, NSMBU and Splatoon; a repository is
-promised once stable, nothing public yet. Take-away: the path is
-technically feasible **on this exact game**; we do not depend on it.
+The earlier "unreleased prototype" claim is obsolete. Public repositories
+now target the **exact Wii U v208 binary**, including its SHA-256:
+
+- **`IshaanKalra2103/BotWRecomp`** — MIT for its own code plus Cemu
+  MPL-2.0 components; recompiler and Cafe OS runtime for macOS/iOS. The
+  author reports playable results on an iPhone 16 Pro and an M1 Pro Mac.
+  The tree registers **488 unique HLE names** and covers **424 of our 437
+  function imports**; the 13 missing names are all H.264 video decode.
+  One squashed commit and a "built with Claude Code" README mean the
+  provenance still needs an audit before any code reuse.
+- **`P1kaCat/Breath-of-The-Wild-Compiled`** — Windows; exact same v208
+  hash; based on `CafeRecomp` commit
+  `922b852e56cd440d23ed8ede3e0b86495e68967f`. It renders the opening screen
+  and the start of the intro, but 3D is incomplete and it is not playable.
+  MPL-2.0 overall with **DolRecomp GPL-3.0** and Cemu MPL-2.0; reference
+  only for this MIT repository.
+- **`hardkiller2565123123/CafeRecomp`** — the upstream generic Wii U
+  recompilation framework, MPL-2.0 plus bundled DolRecomp GPL-3.0 and Cemu
+  MPL-2.0. Early working prototype, not a finished port.
+
+Full review with licenses, counts and reuse boundaries:
+[`2026-10-22-botw-decompilation-and-recompilation.md`](2026-10-22-botw-decompilation-and-recompilation.md).
+Take-away: the path is not merely technically feasible; a public exact-v208
+implementation exists. The open decision is whether to audit/adapt the MIT
+line, collaborate with the Windows GPL line, or continue the independent
+clean-room runtime.
 
 ## 5. PowerPC recompilation beyond Wii U (proven patterns)
 
@@ -124,13 +153,16 @@ technically feasible **on this exact game**; we do not depend on it.
 
 1. **Option A of ADR-0002 is no longer speculative.** "Static
    recompilation + HLE runtime" has a *working* Wii U implementation
-   (Wind Waker HD), a generic toolkit, and a reported proof of concept on
-   BotW itself. The risks that remain are engineering scale and quality of
-   the GX2 layer — not feasibility.
+   (Wind Waker HD), a generic toolkit, and now public exact-v208
+   implementations of BotW itself. The MIT project reports playable
+   results and covers 424/437 of our imports. The risks that remain are
+   provenance, Windows portability and quality of the GX2 layer — not
+   feasibility.
 2. **The long-term convergence path is also visible:** recompiled code →
    replace subsystems with decompiled source as `zeldaret/botw` matures
-   (the WWHD "decomp build" pattern). Our clean-room notes and tools
-   already feed exactly that workflow.
+   (the WWHD "decomp build" pattern). That path is blocked for now by the
+   decompilation's missing license, so it is vocabulary/future work, not a
+   current donor.
 3. **Naming:** use the public names-only database to organize our RE
    (classes, method names, sizes) while keeping the port's hook/symbol
    naming anchored to the **Wii U v208 addresses** (canonical build), the
@@ -154,13 +186,20 @@ technically feasible **on this exact game**; we do not depend on it.
 
 - **Effort**: the GX2 and thread-scheduling layers are the known hard
   parts; both have reference implementations, neither is trivial.
-- **Decompilation maturity**: zeldaret/botw is years from complete; the
-  port must not depend on it. It is a vocabulary source and a future
-  accelerator only.
+- **Decompilation maturity and license**: zeldaret/botw is at 32.794% of
+  functions, years from complete, and publishes no license. The port must
+  not depend on it; it is vocabulary and future work only.
+- **Provenance of the fast path**: the MIT exact-v208 project has a
+  one-commit history and says it was built with Claude Code. Its Cemu
+  files are clearly MPL-2.0, but the rest needs a provenance audit before
+  we import anything.
 - **Platform drift**: our port targets one exact build (Wii U update
-  v208); other versions would need their own translation pass.
+  v208); other versions would need their own translation pass. The MIT
+  implementation is macOS/iOS/Metal-only today; a Windows backend is new
+  work, not a compile flag.
 - **License separation** must be kept tidy: GPL projects are studied,
-  MPL components are vendored as MPL files if/when used.
+  MPL components are vendored as MPL files if/when used, and the MIT
+  project's provenance must be documented file by file.
 
 ## Sources
 
@@ -169,6 +208,13 @@ technically feasible **on this exact game**; we do not depend on it.
 - <https://github.com/leoetlino/uking> — fork + code browser
 - <https://github.com/leoetlino/botw-re-notes/blob/master/symbols.md> —
   "releases are stripped; sead code is shared with Super Mario Odyssey"
+- <https://github.com/IshaanKalra2103/BotWRecomp> — MIT exact-v208
+  recompilation and runtime
+- <https://github.com/P1kaCat/Breath-of-The-Wild-Compiled> — Windows port
+  (MPL-2.0 + DolRecomp GPL-3.0)
+- <https://github.com/hardkiller2565123123/CafeRecomp> — generic Wii U
+  recompilation framework (MPL-2.0 + GPL-3.0 components)
+- <https://github.com/DenisGames54/BotWRecomp-Android> — Android fork
 - <https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp> and its
   `docs/how-it-works.md` — working Wii U recompilation
 - <https://github.com/BlackLineInteractive/nWiiURecomp> — generic Wii U
@@ -178,4 +224,3 @@ technically feasible **on this exact game**; we do not depend on it.
   + shipped port
 - <https://github.com/N64Recomp/N64Recomp> and
   <https://github.com/Zelda64Recomp/Zelda64Recomp> — the lineage
-- Press coverage of the unreleased BotW Wii U "lifter" prototype (2026)

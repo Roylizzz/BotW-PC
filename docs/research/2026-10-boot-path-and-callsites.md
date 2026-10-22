@@ -198,9 +198,11 @@ APIs?
 11. **Cross-check against the public symbol database (Switch 1.5.0).**
     The decompilation project `zeldaret/botw` publishes a names-only
     function database for the *Switch* build of the same game version
-    (`data/uking_functions.csv`: 113,490 entries, 72,243 named; our Wii U
-    RPX itself is stripped — 483 symbols, sections and imports only,
-    verified with `tools/rpxinfo`). It names the framework structures this
+    (`data/uking_functions.csv`: refetched 2026-10-22, **113,491 entries,
+    84,442 named**; our Wii U RPX itself is stripped — 483 symbols,
+    sections and imports only, verified with `tools/rpxinfo`). The
+    decompilation has no license file, so it is vocabulary/reference only;
+    no source or headers are copied. It names the framework structures this
     note describes on the Wii U side:
     - `uking::frm::RootTask` (`prepare` 432 B, `enter`, `calc` 3,908 B,
       `exit`, `dtor`) and `sead::TTaskFactory<RootTask>` — the factory
