@@ -132,9 +132,10 @@ first GX2 frame?
 
    `PPCX_HLE_TRACE=1` logs the modeled call. `ProcUIInit` is void, so
    `r3 = 0x031FA4C8` is the save-callback argument left untouched by the
-   model, not a documented return value. Forty-one exact-name calls are
-   modeled (24 coreinit identity/memory/cache/clock/TLS/heap, the five proc_ui
-   lifecycle calls and 18 input calls), so this entry now completes with exit code 0
+   model, not a documented return value. Fifty-one exact-name calls are
+   modeled (28 coreinit identity/memory/cache/clock/TLS/fast-mutex/heap, the
+   five proc_ui lifecycle calls and 18 input calls), so this entry now
+   completes with exit code 0
    under `PPCX_HLE_STRICT=1`; strict rejection is gated separately by the boot
    fixture's unmodeled `coreinit.OSSleepTicks` call (exit 5). This exercises
    decode, relocation-driven HLE substitution, the tail-call convention, the
@@ -165,12 +166,12 @@ first GX2 frame?
    `baseTime` = epoch, zero reserved bytes). `OSTicksToCalendarTime` writes
    the ten 0x28-byte `OSCalendarTime` fields in UTC and clamps negative
    inputs to 2000-01-01; `OSSleepTicks` (7 sites) remains unmodeled because
-   it needs a scheduler. `tests/hle` now covers 47 models plus the five data
+   it needs a scheduler. `tests/hle` now covers 51 models plus the five data
    slots, including the 64-bit `r3:r4` returns, the system-info and
    calendar layouts, TLS resolution/reset, the `__gh_FOPEN_MAX`/`_iob`
-   values, and the default-heap cells; `tests/mem` verifies the records, TLS
-   and GHS data through the real region map (45 positive HLE lines plus five
-   HLE fault cases). Two real v208 paths run under strict mode with the same
+   values, the default-heap cells and the fast-mutex layout; `tests/mem`
+   verifies the records, TLS, GHS data and fast mutex through the real region
+   map (52 positive HLE lines plus six HLE fault cases). Two real v208 paths run under strict mode with the same
    image: `0x030CB524` (11 instructions, only `OSGetSystemInfo`) prints
    `r3=0x00090000` and exits 0; its disassembly computes
    `busClockSpeed / 4 = 62,156,250` in r4 after zeroing r3, so the result is
@@ -206,8 +207,8 @@ first GX2 frame?
    `~0x105DB1C0`); unsupported instructions and unregistered targets stop
    with an address + register dump. `PPCX_HLE_TRACE=1` logs every HLE call,
    `PPCX_HLE_STRICT=1` aborts on the first unimplemented one (exit code 5);
-   47 exact-name calls are modeled (24 coreinit identity/memory/cache/clock/
-   TLS/heap, five proc_ui lifecycle and 18 input calls) and stay available.
+   51 exact-name calls are modeled (28 coreinit identity/memory/cache/clock/
+   TLS/fast-mutex/heap, five proc_ui lifecycle and 18 input calls) and stay available.
 
 8. **Audit correction pass (2026-10-18).** An independent source audit fixed
    thirteen semantic defects in the runtime ABI, the decoder and the
@@ -385,7 +386,7 @@ first GX2 frame?
     used the local census CSV under `Tools/analysis/` and the analysis JSON;
     both are game-derived and stay ignored.
 
-12. **Default/frame heap and CRT constructor probe (2026-10-22).** The real
+12. **Default/frame heap, fast mutex and CRT constructor probe (2026-10-22).** The real
     GraphicsSystem path was measured with the heap models under
     [ADR-0007](../architecture/decisions/0007-diagnostic-heap-models.md).
     `MEMAllocFromDefaultHeap`, `MEMAllocFromDefaultHeapEx` and
@@ -411,12 +412,28 @@ first GX2 frame?
     measured 6,259 functions, 602,967 instructions and 33,670,752 generated C
     characters in about 1.4 s. TCC 0.9.27 on Windows compiles that unit only
     with `-DPPCX_NO_FMA`; without it, the unresolved `fma` is a build error,
-    not a guest result. A full-table probe runs the CRT loop and reaches
-    `0x0420CA64` as the next unregistered dispatch after the first
-    constructor cluster. That is a measured boundary: no real game boot,
-    rendering, input or audio compatibility is claimed. The next work is to
-    expand constructor roots or translate the full CRT closure and model the
-    next measured service, not to guess GX2 signatures.
+    not a guest result. The first full-table probe reached `0x0420CA64` as the
+    next unregistered dispatch after the first constructor cluster.
+
+    Each unknown target was analyzer-known, so `--expand-window 0x1000` can add
+    every known start in the surrounding 4 KiB window and retry. A bounded
+    24-iteration run translated 7,258 functions / 637,379 instructions,
+    executed 9,417 function entries and expanded 24 targets; its last
+    unregistered dispatch was `0x030C0EB0`. That run also exposed the first
+    measured service cluster: nine unmodeled HLE calls, seven
+    `OSFastMutex_Init`, one `OSFastMutex_Lock` and one `OSFastMutex_Unlock`.
+    The four fast-mutex calls (30/76/121/1 REL24 sites) are now modeled under
+    [ADR-0008](../architecture/decisions/0008-single-thread-fast-mutex.md):
+    Init writes the wut 0x2C-byte tag/name layout, Lock/Unlock are counted
+    no-ops and TryLock returns 1 because the runtime has one guest context.
+
+    A 30-iteration rerun with those models translated 7,459 functions /
+    643,980 instructions, executed 10,291 entries and made 435 modeled HLE
+    calls with zero unimplemented HLE. It stopped at the next unregistered
+    dispatch, `0x0420E2C8`, after expanding its window. That is a measured
+    boundary: no real game boot, rendering, input or audio compatibility is
+    claimed. The next work is to continue the constructor closure and model
+    the next measured service, not to guess GX2 signatures.
 
 ## Evidence quality
 
@@ -513,7 +530,12 @@ first GX2 frame?
   three function-pointer data cells at `0x00090020/24/28`, a 256 MiB bump
   arena at `0x60000000`, synthetic MEM1/MEM2/FG handles and allocation
   through both default and frame-heap calls. They pass the measured
-  GraphicsSystem allocation chain but are not a Cafe OS allocator.
+  GraphicsSystem allocation chain but are not a Cafe OS allocator. The
+  fast-mutex block adds `OSFastMutex_Init/Lock/Unlock/TryLock` under
+  [ADR-0008](../architecture/decisions/0008-single-thread-fast-mutex.md):
+  Init writes the 0x2C-byte wut layout, Lock/Unlock are counted no-ops and
+  TryLock returns 1 in the single-thread runtime. It is not a scheduler or a
+  contention model.
   Remaining tier 1 work: a real MEM heap/scheduler, filesystem and threading
   models. The CRT constructor table is now the more immediate measured path
   (item 12).

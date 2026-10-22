@@ -5,9 +5,10 @@
  * only guest context is pinned to Wii U main core 1), the guest-memory and
  * cache primitives whose contracts are purely mechanical, the proc_ui
  * lifecycle, the deterministic virtual clock/system-info services, the
- * single-module TLS index resolver, and the headless input services used by
- * the input manager. It is NOT a scheduler, a filesystem, a threading
- * implementation, a HOME-menu integration or a host input backend.
+ * single-module TLS index resolver, the fast-mutex calls as no-contention
+ * counters, and the headless input services used by the input manager. It is
+ * NOT a scheduler, a filesystem, a threading implementation, a HOME-menu
+ * integration or a host input backend.
  *
  * The flat arena has no data cache: guest-visible memory is always coherent,
  * so the cache-maintenance calls are typed no-ops that still validate their
@@ -16,8 +17,8 @@
  * preserved by DCZeroRange through ppcx_dcbz.
  *
  * API signatures, return values and overlap semantics checked against
- * devkitPro/wut coreinit/core.h, memory.h, cache.h, time.h, systeminfo.h and
- * proc_ui/procui.h.
+ * devkitPro/wut coreinit/core.h, memory.h, cache.h, time.h, systeminfo.h,
+ * fastmutex.h and proc_ui/procui.h.
  */
 #include "ppcx_hle.h"
 
@@ -555,6 +556,55 @@ static void hle_frm_heap_alloc(Cpu *cpu) {
     cpu->gpr[3] = hle_default_heap_alloc(cpu->gpr[4], cpu->gpr[5]);
 }
 
+/* ---- fast mutex -------------------------------------------------------
+ *
+ * The current runtime executes one guest context, so these models represent
+ * only the uncontended case: Lock/Unlock do not suspend and TryLock succeeds.
+ * Init initializes the wut-defined OSFastMutex layout so guest code that
+ * inspects tag/name sees the expected values. No queue links or ownership are
+ * maintained; this is not a threading implementation.
+ */
+static PpcxFastMutexState g_fast_mutex;
+
+const PpcxFastMutexState *ppcx_hle_fast_mutex_state(void) {
+    return &g_fast_mutex;
+}
+
+void ppcx_hle_fast_mutex_reset(void) {
+    memset(&g_fast_mutex, 0, sizeof g_fast_mutex);
+}
+
+static void hle_fast_mutex_init(Cpu *cpu) {
+    u32 mutex = cpu->gpr[3];
+    u32 name = cpu->gpr[4];
+    u32 off;
+
+    g_fast_mutex.inits++;
+    g_fast_mutex.last_mutex = mutex;
+    g_fast_mutex.last_name = name;
+    hle_check_range(mutex, PPCX_FAST_MUTEX_SIZE, 1);
+    ppcx_wr32(mutex, PPCX_FAST_MUTEX_TAG);
+    ppcx_wr32(mutex + 4u, name);
+    for (off = 8u; off < PPCX_FAST_MUTEX_SIZE; off += 4u) {
+        ppcx_wr32(mutex + off, 0u);
+    }
+}
+
+static void hle_fast_mutex_lock(Cpu *cpu) {
+    (void)cpu;
+    g_fast_mutex.locks++;
+}
+
+static void hle_fast_mutex_unlock(Cpu *cpu) {
+    (void)cpu;
+    g_fast_mutex.unlocks++;
+}
+
+static void hle_fast_mutex_try_lock(Cpu *cpu) {
+    g_fast_mutex.trylocks++;
+    cpu->gpr[3] = 1u; /* uncontended: acquisition succeeds */
+}
+
 /* ---- GHS C-library data ------------------------------------------------
  * __gh_FOPEN_MAX and _iob are data imports, so they are resolved by name to
  * storage in a page that is separate from the OSSystemInfo/TLS page. The
@@ -840,6 +890,10 @@ static const PpcxHleEntry hle_registry[] = {
     { "coreinit.OSGetSystemInfo", hle_get_system_info },
     { "coreinit.OSTicksToCalendarTime", hle_ticks_to_calendar },
     { "coreinit.__tls_get_addr", hle_tls_get_addr },
+    { "coreinit.OSFastMutex_Init", hle_fast_mutex_init },
+    { "coreinit.OSFastMutex_Lock", hle_fast_mutex_lock },
+    { "coreinit.OSFastMutex_Unlock", hle_fast_mutex_unlock },
+    { "coreinit.OSFastMutex_TryLock", hle_fast_mutex_try_lock },
     { "proc_ui.ProcUIInit", hle_procui_init },
     { "proc_ui.ProcUIProcessMessages", hle_procui_process_messages },
     { "proc_ui.ProcUIDrawDoneRelease", hle_procui_draw_done_release },

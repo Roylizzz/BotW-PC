@@ -337,6 +337,19 @@ function buildHle() {
     stmt("ppcx_wr16(PPCX_GH_FOPEN_MAX_ADDR, 0xffffu); ppcx_hle_ghs_reset();");
     line('printf("hle-ghs-reset=%04X\\n", (unsigned)ppcx_rd16(PPCX_GH_FOPEN_MAX_ADDR));', "hle-ghs-reset=0014");
 
+    /* Fast-mutex Init writes the 0x2C-byte wut layout, not past it; the
+     * single-thread Lock/Unlock/TryLock models preserve or return as
+     * documented. 0x12600 is inside the writable data region. */
+    stmt("memset(&cpu, 0, sizeof cpu); cpu.gpr[3] = 0x00012600u; cpu.gpr[4] = 0x00010000u;");
+    line('printf("hle-mutex-init=%d\\n", ppcx_hle_dispatch_named(&cpu, "coreinit.OSFastMutex_Init"));', "hle-mutex-init=1");
+    line('printf("hle-mutex-tag=%08X\\n", (unsigned)ppcx_rd32(0x00012600u));', "hle-mutex-tag=664D7458");
+    line('printf("hle-mutex-name=%08X\\n", (unsigned)ppcx_rd32(0x00012604u));', "hle-mutex-name=00010000");
+    stmt("cpu.gpr[3] = 0x00012600u;");
+    line('printf("hle-mutex-lock=%d\\n", ppcx_hle_dispatch_named(&cpu, "coreinit.OSFastMutex_Lock"));', "hle-mutex-lock=1");
+    line('printf("hle-mutex-unlock=%d\\n", ppcx_hle_dispatch_named(&cpu, "coreinit.OSFastMutex_Unlock"));', "hle-mutex-unlock=1");
+    line('printf("hle-mutex-trylock=%d\\n", ppcx_hle_dispatch_named(&cpu, "coreinit.OSFastMutex_TryLock"));', "hle-mutex-trylock=1");
+    line('printf("hle-mutex-trylock-r3=%08X\\n", (unsigned)cpu.gpr[3]);', "hle-mutex-trylock-r3=00000001");
+
     line('printf("hle-unknown=%d\\n", ppcx_hle_dispatch_named(&cpu, "coreinit.OSBlockMoveX"));', "hle-unknown=0");
     return { code, expected };
 }
@@ -382,6 +395,14 @@ function buildHleFaults() {
                 "cpu.gpr[3] = 0x00023000u; " +
                 'ppcx_hle_dispatch_named(&cpu, "coreinit.__tls_get_addr");',
             line: faultLine("read", 8, 0x00023000),
+        },
+        {
+            id: "hle-fast-mutex-unmapped",
+            stmt:
+                "Cpu cpu; memset(&cpu, 0, sizeof cpu); " +
+                "cpu.gpr[3] = 0x00023000u; cpu.gpr[4] = 0u; " +
+                'ppcx_hle_dispatch_named(&cpu, "coreinit.OSFastMutex_Init");',
+            line: faultLine("write", 0x2c, 0x00023000),
         },
     ];
 }

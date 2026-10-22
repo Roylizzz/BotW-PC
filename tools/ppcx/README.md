@@ -160,14 +160,25 @@ The pipeline runs against the real module (9,248,515 words of `.text`):
   `0x0FFFEC18`, frame allocation `0x600013E8`) and stops later on a null
   global that requires CRT/`main` initialization.
 
+  The fast-mutex block adds the four v208 `OSFastMutex_*` calls under
+  [ADR-0008](../../docs/architecture/decisions/0008-single-thread-fast-mutex.md):
+  Init writes the documented 0x2C-byte tag/name layout, Lock/Unlock are
+  counted no-ops and TryLock returns 1 because the runtime has one guest
+  context. It is not a scheduler or contention model.
+
   The v208 static-constructor table at `0x1045CC2C` has 6,115 entries.
   Translating the full table plus direct callees measured 6,259 functions,
   602,967 instructions and 33,670,752 generated C characters in about 1.4 s;
   TCC on Windows needs `-DPPCX_NO_FMA`. The local `tests/real/probe.js` can
   seed these entries (`--root-table`), bound the table (`--root-table-limit`)
   and batch-expand discovery around an unknown dispatch (`--expand-window`).
-  A full-table probe runs the CRT loop and reaches `0x0420CA64` as the next
-  unregistered dispatch; that is a measured blocker, not a boot.
+  A 24-iteration run with `--expand-window 0x1000` translated 7,258 functions
+  / 637,379 instructions and executed 9,417 entries; it stopped at
+  `0x030C0EB0` and exposed the fast-mutex cluster. After those models, a
+  30-iteration run translated 7,459 functions / 643,980 instructions,
+  executed 10,291 entries and made 435 modeled HLE calls with zero
+  unimplemented HLE; its next unregistered dispatch is `0x0420E2C8`. That is a
+  measured blocker, not a boot.
 
 Full notes, metrics and the remaining gaps towards a first GX2 frame are in
 `docs/research/2026-10-recompiler-prototype.md`.
@@ -310,13 +321,15 @@ boundary/unaligned/host accesses, thirteen illegal accesses (nine outside
 every region and four writes to a read-only one) each failing in its own
 process with exit code 9 and an exact diagnostic, the fault hook and
 run-to-run determinism. The HLE part checks the memory/cache models under
-the same map (45 positive lines: `OSBlockMove` non-overlapping and
+the same map (52 positive lines: `OSBlockMove` non-overlapping and
 overlapping, `OSBlockSet`, `memcpy`, `memset`, block-granular
 `DCZeroRange`, cache/barrier no-ops, the mapped `OSGetSystemInfo`
 system-info record, the valid/invalid TLS index cases, the GHS
-`__gh_FOPEN_MAX`/`_iob` values and reset, read-only source) and five HLE
+`__gh_FOPEN_MAX`/`_iob` values and reset, the fast-mutex tag/name layout and
+single-thread counters, read-only source) and six HLE
 fault processes (read-only destination, unmapped destination, unmapped
-source, read-only `DCZeroRange` block, unmapped TLS index)
+source, read-only `DCZeroRange` block, unmapped TLS index, unmapped fast-mutex
+object)
 (`node tests/mem/run.js` → `mem: OK`; the job runs in CI).
 
 The synthetic boot harness (`tests/boot`) authors a game-free RPX (eleven
@@ -353,13 +366,14 @@ scenario additionally gates the cross-range start fixpoint (pre-fixpoint
 analyzer → 14 failures, including the runtime exit 4 at `0x000100F0`).
 
 The native HLE contract test (`tests/hle/test_hle.c`, compiled with
-`cc -Wall -Wextra -Werror` in CI) covers the 47 modeled calls (24 coreinit
-identity/memory/cache/clock/TLS/heap, five proc_ui lifecycle and 18 input
+`cc -Wall -Wextra -Werror` in CI) covers the 51 modeled calls (28 coreinit
+identity/memory/cache/clock/TLS/fast-mutex/heap, five proc_ui lifecycle and 18 input
 models) plus the five data slots, exact-name matching, register preservation,
 the 64-bit `r3:r4` clock returns, the 0x20-byte system-info and 0x28-byte
 calendar layouts, TLS index resolution/invalid indices, the FOPEN value, all
 20 `_iob` entries and reset, the default-heap allocation/alignment/exhaustion/
-free bookkeeping, the function-pointer cells and base handles, and the
+free bookkeeping, the function-pointer cells and base handles, the fast-mutex
+tag/name layout and single-thread counters, and the
 `OSBlockMove` overlap guarantee on a raw arena.
 
 All tests use only synthetic instruction sequences, synthetic import tables

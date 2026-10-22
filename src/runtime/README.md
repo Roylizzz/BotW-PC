@@ -326,9 +326,11 @@ non-heap v208 data imports (`__atexit_cleanup` and the two
 `__cpp_exception_*` pointers) remain unmodeled; the three default-heap
 function-pointer cells are covered by the heap model above.
 
-All other imports remain unimplemented, including filesystem, threading, GX2
-and the Wii Remote audio/motor path. In diagnostic mode they are counted but
-still return as no-ops (not a valid game execution path). Set
+All other imports remain unimplemented, including filesystem, GX2, real
+threading/scheduling, and the Wii Remote audio/motor path. The fast-mutex
+models cover only the uncontended single-thread case; they are not a
+threading implementation. In diagnostic mode unimplemented calls are counted
+but still return as no-ops (not a valid game execution path). Set
 `PPCX_HLE_STRICT=1` to stop on such calls. Exact module-qualified lookup means
 similarly named symbols in other modules cannot accidentally be considered
 implemented.
@@ -341,19 +343,22 @@ cc -std=c11 -Wall -Wextra -Werror -I src/runtime/include src/runtime/src/ppcx_hl
 ```
 
 The contract test runs on a raw host arena (`ppcx_mem_active` is 0, with a
-stubbed checker) and covers the 47 models, exact-name matching and register
+stubbed checker) and covers the 51 models, exact-name matching and register
 preservation, including the 64-bit clock returns, the system-info and
 calendar layouts, TLS resolution and reset, the GHS data names/values/reset,
 the default-heap allocation/alignment/exhaustion/free bookkeeping, the
-function-pointer data cells and base handles, the proc_ui lifecycle,
+function-pointer data cells and base handles, the fast-mutex tag/name layout
+and single-thread counters, the proc_ui lifecycle,
 callback table and re-init, and the input init/read, touch, callback, motor,
 gyro and WPAD contracts. The compiled `tests/mem`
 harness links the same `ppcx_hle.c` with the real `ppcx_mem.c` and region
 map: it checks the copy, fill and block semantics, the reserved HLE data
-pages, the guest `OSSystemInfo` record, valid/invalid TLS indices and the GHS
-data values (45 positive HLE lines), and runs five extra child processes in which a
+pages, the guest `OSSystemInfo` record, valid/invalid TLS indices, the GHS
+data values and the fast-mutex layout (52 positive HLE lines), and runs six
+extra child processes in which a
 read-only destination, an unmapped destination, an unmapped source, a
-read-only `DCZeroRange` block and an unmapped TLS index must each exit with
+read-only `DCZeroRange` block, an unmapped TLS index and an unmapped
+fast-mutex object must each exit with
 code 9 and the exact diagnostic. The workflow is manual-only; dispatch
 it from the Actions tab. It runs the HLE contract test, `tests/mem` and the
 compiled ISA/loader/boot harnesses. Do not count modeled identity, memory/cache,

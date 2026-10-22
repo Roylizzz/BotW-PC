@@ -130,6 +130,33 @@ typedef struct PpcxDefaultHeapState {
 const PpcxDefaultHeapState *ppcx_hle_default_heap_state(void);
 void ppcx_hle_default_heap_reset(void);
 
+/*
+ * Deterministic single-thread fast-mutex model.
+ *
+ * v208 imports OSFastMutex_Init, OSFastMutex_Lock, OSFastMutex_Unlock and
+ * OSFastMutex_TryLock as coreinit functions (30/76/121/1 REL24 sites). The
+ * runtime has no scheduler and executes one guest context, so lock and unlock
+ * are counted no-ops and TryLock always reports success. Init clears the
+ * wut-defined 0x2C-byte OSFastMutex and writes the documented tag and name;
+ * queue links, recursion, ownership and contention are not modeled. This is
+ * not a thread-safe implementation and must be replaced before any
+ * multi-threaded execution. See ADR-0008.
+ */
+#define PPCX_FAST_MUTEX_TAG 0x664D7458u
+#define PPCX_FAST_MUTEX_SIZE 0x2Cu
+
+typedef struct PpcxFastMutexState {
+    u32 inits;
+    u32 locks;
+    u32 unlocks;
+    u32 trylocks;
+    u32 last_mutex;
+    u32 last_name;
+} PpcxFastMutexState;
+
+const PpcxFastMutexState *ppcx_hle_fast_mutex_state(void);
+void ppcx_hle_fast_mutex_reset(void);
+
 /* True for the three function-pointer data cells above. */
 int ppcx_hle_data_is_fnptr_addr(u32 addr);
 

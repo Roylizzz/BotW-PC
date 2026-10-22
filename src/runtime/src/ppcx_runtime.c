@@ -379,6 +379,7 @@ int ppcx_run(void) {
     ppcx_hle_tls_reset();
     ppcx_hle_ghs_reset();
     ppcx_hle_default_heap_reset();
+    ppcx_hle_fast_mutex_reset();
     /*
      * Optional RPX load image (build/ppcx/image.bin, written by
      * `tools/ppcx image`): maps .rodata/.data/.bss so translated code can

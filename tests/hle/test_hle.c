@@ -1125,6 +1125,76 @@ static int test_default_heap(void) {
     return 0;
 }
 
+static int test_fast_mutex(void) {
+    Cpu cpu;
+    Cpu before;
+    const PpcxFastMutexState *s;
+    u32 i;
+
+    memset(arena + 0x1000, 0xaa, PPCX_FAST_MUTEX_SIZE + 4u);
+    ppcx_hle_fast_mutex_reset();
+    s = ppcx_hle_fast_mutex_state();
+    if (s->inits != 0u || s->locks != 0u || s->unlocks != 0u || s->trylocks != 0u) {
+        return fail("fast mutex reset state");
+    }
+
+    /* Init is void and writes the wut-defined OSFastMutex layout. */
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 0x1000u;
+    cpu.gpr[4] = 0x12345678u;
+    before = cpu;
+    if (!ppcx_hle_dispatch_named(&cpu, "coreinit.OSFastMutex_Init")) {
+        return fail("OSFastMutex_Init not modeled");
+    }
+    if (memcmp(&cpu, &before, sizeof cpu) != 0) return fail("OSFastMutex_Init changed registers");
+    if (ppcx_rd32(0x1000u) != PPCX_FAST_MUTEX_TAG) return fail("OSFastMutex tag");
+    if (ppcx_rd32(0x1004u) != 0x12345678u) return fail("OSFastMutex name");
+    for (i = 8u; i < PPCX_FAST_MUTEX_SIZE; i += 4u) {
+        if (ppcx_rd32(0x1000u + i) != 0u) return fail("OSFastMutex fields not cleared");
+    }
+    if (arena[0x1000u + PPCX_FAST_MUTEX_SIZE] != 0xaau) return fail("OSFastMutex wrote past its size");
+    s = ppcx_hle_fast_mutex_state();
+    if (s->inits != 1u || s->last_mutex != 0x1000u || s->last_name != 0x12345678u) {
+        return fail("OSFastMutex_Init state");
+    }
+
+    /* Lock and Unlock are void counted no-ops in the single-thread model. */
+    memset(&cpu, 0x5a, sizeof cpu);
+    before = cpu;
+    if (!ppcx_hle_dispatch_named(&cpu, "coreinit.OSFastMutex_Lock")) {
+        return fail("OSFastMutex_Lock not modeled");
+    }
+    if (memcmp(&cpu, &before, sizeof cpu) != 0) return fail("OSFastMutex_Lock changed registers");
+    memset(&cpu, 0x5a, sizeof cpu);
+    before = cpu;
+    if (!ppcx_hle_dispatch_named(&cpu, "coreinit.OSFastMutex_Unlock")) {
+        return fail("OSFastMutex_Unlock not modeled");
+    }
+    if (memcmp(&cpu, &before, sizeof cpu) != 0) return fail("OSFastMutex_Unlock changed registers");
+    s = ppcx_hle_fast_mutex_state();
+    if (s->locks != 1u || s->unlocks != 1u) return fail("OSFastMutex lock/unlock counts");
+
+    /* TryLock returns TRUE and changes only r3. */
+    memset(&cpu, 0x5a, sizeof cpu);
+    cpu.gpr[3] = 0x1000u;
+    before = cpu;
+    if (!ppcx_hle_dispatch_named(&cpu, "coreinit.OSFastMutex_TryLock")) {
+        return fail("OSFastMutex_TryLock not modeled");
+    }
+    if (cpu.gpr[3] != 1u) return fail("OSFastMutex_TryLock result");
+    cpu.gpr[3] = before.gpr[3];
+    if (memcmp(&cpu, &before, sizeof cpu) != 0) return fail("OSFastMutex_TryLock changed other registers");
+    s = ppcx_hle_fast_mutex_state();
+    if (s->trylocks != 1u) return fail("OSFastMutex_TryLock count");
+
+    ppcx_hle_fast_mutex_reset();
+    s = ppcx_hle_fast_mutex_state();
+    if (s->inits != 0u || s->locks != 0u || s->unlocks != 0u || s->trylocks != 0u) {
+        return fail("fast mutex reset did not clear counters");
+    }
+    return 0;
+}
+
 static int test_exact_names(void) {
     Cpu cpu;
     Cpu before;
@@ -1142,6 +1212,8 @@ static int test_exact_names(void) {
     if (ppcx_hle_dispatch_named(&cpu, "other.OSGetSystemTime") != 0) return fail("incorrect clock module accepted");
     if (ppcx_hle_dispatch_named(&cpu, "coreinit.__tls_get_addrX") != 0) return fail("non-exact TLS import accepted");
     if (ppcx_hle_dispatch_named(&cpu, "other.__tls_get_addr") != 0) return fail("incorrect TLS module accepted");
+    if (ppcx_hle_dispatch_named(&cpu, "coreinit.OSFastMutex_InitX") != 0) return fail("non-exact mutex import accepted");
+    if (ppcx_hle_dispatch_named(&cpu, "other.OSFastMutex_Init") != 0) return fail("incorrect mutex module accepted");
     if (ppcx_hle_dispatch_named(&cpu, "coreinit.OSGetTick") != 0) return fail("unmodeled OSGetTick accepted");
     if (ppcx_hle_dispatch_named(&cpu, "padscore.KPADRead") != 0) return fail("unmodeled KPADRead accepted");
     if (ppcx_hle_dispatch_named(&cpu, "vpad.VPADInit") != 0) return fail("unmodeled VPADInit accepted");
@@ -1165,8 +1237,9 @@ int main(void) {
     if (test_tls_model() != 0) return 1;
     if (test_ghs_data_model() != 0) return 1;
     if (test_default_heap() != 0) return 1;
+    if (test_fast_mutex() != 0) return 1;
     if (test_input_models() != 0) return 1;
     if (test_exact_names() != 0) return 1;
-    puts("hle: core identity, memory/cache, proc_ui lifecycle, virtual clock/system info, TLS, GHS data, default heap and input models, exact matching and register preservation OK");
+    puts("hle: core identity, memory/cache, proc_ui lifecycle, virtual clock/system info, TLS, GHS data, default heap, fast mutex and input models, exact matching and register preservation OK");
     return 0;
 }

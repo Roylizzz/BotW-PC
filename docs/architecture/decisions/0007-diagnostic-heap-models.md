@@ -94,5 +94,14 @@ must not pretend that a bump arena is a Cafe OS heap.
   the full-table unit translates 6,259 functions and reaches
   `0x0420CA64` as the next unregistered dispatch after the first few
   constructors.
+- **Follow-up (2026-10-22):** bounded root-window expansion moved that
+  boundary further. A 24-iteration run with `--expand-window 0x1000`
+  translates 7,258 functions / 637,379 instructions, executes 9,417 entries
+  and stops at `0x030C0EB0`; the same run exposed the fast-mutex cluster now
+  modeled under [ADR-0008](0008-single-thread-fast-mutex.md). After those
+  models, a 30-iteration run translates 7,459 functions / 643,980
+  instructions, executes 10,291 entries with zero unimplemented HLE and stops
+  at `0x0420E2C8`. The older 6,259/`0x0420CA64` boundary remains the
+  first full-table measurement, not the current one.
 - The probe artifacts and constructor table are derived from the user's own
   dump and stay under git-ignored `build/`; no game content is committed.
