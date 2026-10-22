@@ -8,15 +8,16 @@ booted guest. No game data is required or produced.
 
 `run.js`:
 
-1. builds the fixture RPX — ten functions (boot entry, helper, strict-mode
+1. builds the fixture RPX — eleven functions (boot entry, helper, strict-mode
    entry, fault entry, pointer-only getter, split target, tail entry, switch
-   entry, proc_ui lifecycle entry and data-import entry) plus an inline
-   Metrowerks branch table with three `b` entries and three case bodies, the
-   two `.fimport_*` sections (`coreinit.memcpy`, `coreinit.OSBlockMove`,
-   `coreinit.OSSleepTicks` and all five `proc_ui` lifecycle imports) and a
-   `.dimport_coreinit` section for `coreinit.__gh_FOPEN_MAX` and
-   `coreinit._iob`, `.rodata` with three `R_PPC_ADDR32` pointers (one with an
-   addend) and two applied TLS sites,
+   entry, proc_ui lifecycle entry, data-import entry and default-heap
+   data-import entry) plus an inline Metrowerks branch table with three `b`
+   entries and three case bodies, the two `.fimport_*` sections
+   (`coreinit.memcpy`, `coreinit.OSBlockMove`, `coreinit.OSSleepTicks` and all
+   five `proc_ui` lifecycle imports) and a `.dimport_coreinit` section for
+   `coreinit.__gh_FOPEN_MAX`, `coreinit._iob` and
+   `coreinit.MEMAllocFromDefaultHeap`, `.rodata` with three `R_PPC_ADDR32`
+   pointers (one with an addend) and two applied TLS sites,
    `.data`, a NOBITS `.bss` and the allocated metadata trio;
 2. runs the real `analyze` path and asserts the authored function starts,
    the pointer-only start, the cross-range tail start, the inline
@@ -30,7 +31,7 @@ booted guest. No game data is required or produced.
    (`ppcx_runtime.c`, `ppcx_mem.c`, `ppcx_hle.c`, `ppcx_image.c`) and a small
    generated driver (shared compiler discovery: `PPCX_CC`, then
    `cc`/`gcc`/`clang`/`tcc`);
-6. boots ten scenarios headless and compares **every** stderr/stdout line
+6. boots twelve scenarios headless and compares **every** stderr/stdout line
    with fixture-authored expectations, then runs the boot scenario again and
    requires byte-identical output.
 
@@ -38,8 +39,9 @@ booted guest. No game data is required or produced.
 
 | Scenario | Entry | Expected |
 | -------- | ----- | -------- |
-| `boot` | boot | Exit 0. `PPCX_HLE_TRACE`/`PPCX_DISPATCH_TRACE` transcripts: entry dispatch, `coreinit.memcpy` (direct `bl`), trampoline dispatch `0x50000000`, `coreinit.OSBlockMove` (address-taken), `entry returned, r3 = 0x11223344`, two HLE calls. |
+| `boot` | boot | Exit 0. `PPCX_HLE_TRACE`/`PPCX_DISPATCH_TRACE` transcripts: entry dispatch, `coreinit.memcpy` (direct `bl`), trampoline dispatch `0x50000008`, `coreinit.OSBlockMove` (address-taken), `entry returned, r3 = 0x11223344`, two HLE calls. |
 | `data` | data | Exit 0. Takes `__gh_FOPEN_MAX` with `addis` + `lhz` (the `ADDR16_LO` relocation is on the load displacement) and `_iob` with `addis` + `addi`; returns `20 + _iob[0].info = 0x18` and makes no HLE call. |
+| `memory` | memory | Exit 0. Takes the `coreinit.MEMAllocFromDefaultHeap` function-pointer data cell with `addis` + `addi`, loads the trampoline from the cell and calls it through `bctrl`; the first bump allocation is `0x60001000` and the HLE trace shows one modeled default-heap call. |
 | `tolerant` | strict | Exit 0. Unmodeled `coreinit.OSSleepTicks` is a counted `[diagnostic no-op]`; r3 survives. |
 | `strict` | strict | Exit 5. `unimplemented HLE … in strict mode` plus the register dump (r1/r3/lr exact). |
 | `pointer` | pointer-only getter | Exit 0 with no HLE call, reached only through the `.rodata` code pointer. |
@@ -61,14 +63,14 @@ unnoticed.
 Expected output:
 
 ```
-boot: 10 scenarios (8 entries compiled), 54 transcript lines, 112 memory probe lines, compiled with <compiler>
+boot: 12 scenarios (9 entries compiled), 63 transcript lines, 128 memory probe lines, compiled with <compiler>
 boot: OK, the synthetic RPX boots headless with stable checkpoints
 ```
 
-The reference unit translates 16 functions (133 instructions): the authored
-scenario entries (boot, strict, fault, pointer, tail, switch, proc_ui and
-data), the helper called by the boot entry, the mid-body tail target, the
-three inline table entries and the three switch case bodies. The table
+The reference unit translates 17 functions (146 instructions): the authored
+scenario entries (boot, strict, fault, pointer, tail, switch, proc_ui, data
+and memory), the helper called by the boot entry, the mid-body tail target,
+the three inline table entries and the three switch case bodies. The table
 entries are emitted as explicit roots because the translator's static callee
 walk cannot see a computed `bctr` target.
 
@@ -124,6 +126,15 @@ proves that `R_PPC_ADDR16_LO` is applied to D-form load displacements, not
 only to `addi`. Reverting either rule makes the entry read an invalid address
 and the boot fails with a guest-memory fault instead of `r3 = 0x18`; the
 post-run probes also check the modeled `_iob` words.
+
+The `memory` scenario gates the default-heap function-pointer model
+(ADR-0007). The `.dimport_coreinit` slot resolves to the HLE data cell at
+`0x00090020`; resolving the import writes the handler trampoline into that
+cell. The guest then loads the cell and calls it through `bctrl`, so a model
+that only handled direct REL24 calls would fail with an unregistered dispatch
+or a wrong return. The expected `r3 = 0x60001000` is the first allocation from
+the diagnostic bump arena, and the HLE trace records exactly one modeled
+default-heap call.
 
 The input models are deliberately not part of this synthetic fixture:
 `tests/hle` covers all 18 natively on a raw arena, and the real v208 wrappers

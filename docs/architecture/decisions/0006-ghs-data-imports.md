@@ -51,10 +51,11 @@ writable on channels 1 and 2.
    start.
 5. **Scope.** This models deterministic storage and the three standard-stream
    flag words. It does not implement `FILE` semantics, buffers, file
-   descriptors or stdio calls. The other six v208 data imports
-   (`__atexit_cleanup`, the `__cpp_exception_*` pointers and the heap function
-   pointers) remain unmodeled and fail loudly at run time if a translated unit
-   takes their address.
+   descriptors or stdio calls. The three non-heap v208 data imports
+   (`__atexit_cleanup` and the `__cpp_exception_*` pointers) remain
+   unmodeled; the three heap function-pointer slots are modeled separately
+   under [ADR-0007](0007-diagnostic-heap-models.md) and fail loudly at run
+   time if a translated unit takes an unmodeled address.
 
 ## Consequences
 

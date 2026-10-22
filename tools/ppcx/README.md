@@ -91,8 +91,8 @@ The pipeline runs against the real module (9,248,515 words of `.text`):
 
   `PPCX_HLE_TRACE=1` shows the modeled call. `ProcUIInit` is a void function,
   so `r3` still holds the save-callback argument by construction, not as a
-  documented return value. Forty-one exact-name calls are modeled (18
-  `coreinit` identity/memory/cache/clock/TLS calls, the five `proc_ui`
+  documented return value. Forty-seven exact-name calls are modeled (24
+  `coreinit` identity/memory/cache/clock/TLS/heap calls, the five `proc_ui`
   lifecycle calls and 18 `padscore`/`vpad`/`vpadbase` input calls in
   `src/runtime/src/ppcx_hle.c`); this entry now completes with exit code 0
   under `PPCX_HLE_STRICT=1`. Strict rejection of an unmodeled call is gated
@@ -141,8 +141,33 @@ The pipeline runs against the real module (9,248,515 words of `.text`):
   including `PPCX_IMPORT_DATA_ADDR(144)` for `_iob` and a `ppcx_rd16`
   expression over `PPCX_IMPORT_DATA_ADDR(132)` for `__gh_FOPEN_MAX`; the
   function is not run because it still reaches unmodeled dispatch targets and
-  `__gh_set_errno`. The other six v208 data imports remain deliberately
-  unmodeled; there is no filesystem or stdio model.
+  `__gh_set_errno`. The three non-heap data imports (`__atexit_cleanup` and
+  the two `__cpp_exception_*` pointers) remain deliberately unmodeled; there
+  is no filesystem or stdio model.
+
+  The diagnostic default/frame-heap models landed on 2026-10-22 under
+  [ADR-0007](../architecture/decisions/0007-diagnostic-heap-models.md).
+  `MEMAllocFromDefaultHeap`, `MEMAllocFromDefaultHeapEx` and
+  `MEMFreeToDefaultHeap` are `.dimport_coreinit` function-pointer cells at
+  `0x00090020/24/28`; resolving the data import writes the matching HLE
+  trampoline into the cell, so the real `lwz` + `bctrl` shape reaches the
+  handler. A 256 MiB bump arena at `0x60000000` backs default and base
+  frame-heap allocations (data starts at `0x60001000`, handles `0x60000000`,
+  `0x60000080`, `0x60000400`). It is probe scaffolding: no real free/reuse,
+  frame head/tail frees, MEM1/MEM2 split, locks or reclaimer. The real
+  GraphicsSystem probe now passes the measured heap chain
+  (`0x60001000`, foreground handle `0x60000400`, allocatable size
+  `0x0FFFEC18`, frame allocation `0x600013E8`) and stops later on a null
+  global that requires CRT/`main` initialization.
+
+  The v208 static-constructor table at `0x1045CC2C` has 6,115 entries.
+  Translating the full table plus direct callees measured 6,259 functions,
+  602,967 instructions and 33,670,752 generated C characters in about 1.4 s;
+  TCC on Windows needs `-DPPCX_NO_FMA`. The local `tests/real/probe.js` can
+  seed these entries (`--root-table`), bound the table (`--root-table-limit`)
+  and batch-expand discovery around an unknown dispatch (`--expand-window`).
+  A full-table probe runs the CRT loop and reaches `0x0420CA64` as the next
+  unregistered dispatch; that is a measured blocker, not a boot.
 
 Full notes, metrics and the remaining gaps towards a first GX2 frame are in
 `docs/research/2026-10-recompiler-prototype.md`.
@@ -294,17 +319,19 @@ fault processes (read-only destination, unmapped destination, unmapped
 source, read-only `DCZeroRange` block, unmapped TLS index)
 (`node tests/mem/run.js` → `mem: OK`; the job runs in CI).
 
-The synthetic boot harness (`tests/boot`) authors a game-free RPX (ten
-functions plus an inline three-entry `b`-table, ten imports including the two
-GHS data slots, relocated `.rodata` pointers, two applied TLS sites,
-`.data`/`.bss`), runs it through
+The synthetic boot harness (`tests/boot`) authors a game-free RPX (eleven
+functions plus an inline three-entry `b`-table, eleven imports including the
+two GHS data slots and the default-heap function pointer, relocated `.rodata`
+pointers, two applied TLS sites, `.data`/`.bss`), runs it through
 the real `analyze` → `translateModule` → `buildImage`/`serializeImage` path,
 compiles the generated unit with the real runtime, checked-memory model,
-image loader and HLE layer, and boots it headless in ten scenarios: modeled
+image loader and HLE layer, and boots it headless in twelve scenarios: modeled
 calls through a direct `bl` and through an address-taken import's dispatcher
 trampoline (`PPCX_HLE_TRACE`/`PPCX_DISPATCH_TRACE` transcripts), a data-import
 entry using `addis` + `lhz` for `__gh_FOPEN_MAX` and `addis` + `addi` for
-`_iob` (`r3 = 0x18`), an unmodeled
+`_iob` (`r3 = 0x18`), a default-heap data-import entry that loads the
+`MEMAllocFromDefaultHeap` cell and calls it through `bctrl`
+(`r3 = 0x60001000`), an unmodeled
 `coreinit.OSSleepTicks` tolerated as a counted no-op, `PPCX_HLE_STRICT=1`
 (exit 5 + register dump), a pointer-only getter reached from `.rodata`, a
 cross-range tail `b` that runs the mid-body start the analysis fixpoint
@@ -315,7 +342,7 @@ calls with a post-shutdown `EXITING` status (`r3 = 0x47`), an unmapped read
 (exit 9) and the same boot without `PPCX_IMAGE` (exit 9 at the first data
 read). Every stderr/stdout line and every guest-memory probe is compared with
 fixture-authored expectations, and the boot run must repeat byte-identically
-(`node tests/boot/run.js` → `boot: 10 scenarios … boot: OK`). The fixture found
+(`node tests/boot/run.js` → `boot: 12 scenarios (9 entries compiled), 63 transcript lines, 128 memory probe lines -> boot: OK`). The fixture found
 four defects now gated there: address-taken imports missing from
 `ppcx_import_name`, an initial SP that left the loader's ABI frame outside the
 stack region, data imports being routed to the function trampoline (and
@@ -326,13 +353,14 @@ scenario additionally gates the cross-range start fixpoint (pre-fixpoint
 analyzer → 14 failures, including the runtime exit 4 at `0x000100F0`).
 
 The native HLE contract test (`tests/hle/test_hle.c`, compiled with
-`cc -Wall -Wextra -Werror` in CI) covers the 41 modeled calls (18 coreinit
-identity/memory/cache/clock/TLS, five proc_ui lifecycle and 18 input models)
-plus the GHS data slots, exact-name matching, register preservation, the
-64-bit `r3:r4` clock returns, the 0x20-byte system-info and 0x28-byte
+`cc -Wall -Wextra -Werror` in CI) covers the 47 modeled calls (24 coreinit
+identity/memory/cache/clock/TLS/heap, five proc_ui lifecycle and 18 input
+models) plus the five data slots, exact-name matching, register preservation,
+the 64-bit `r3:r4` clock returns, the 0x20-byte system-info and 0x28-byte
 calendar layouts, TLS index resolution/invalid indices, the FOPEN value, all
-20 `_iob` entries and reset, and the `OSBlockMove` overlap guarantee on a raw
-arena.
+20 `_iob` entries and reset, the default-heap allocation/alignment/exhaustion/
+free bookkeeping, the function-pointer cells and base handles, and the
+`OSBlockMove` overlap guarantee on a raw arena.
 
 All tests use only synthetic instruction sequences, synthetic import tables
 and synthetic RPX fixtures; no game data is required.

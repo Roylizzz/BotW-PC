@@ -34,7 +34,8 @@ Usage: node ppcx.js <command> [options]
 Commands:
   analyze    --rpx <file> [--cache <json>] [--top N]
   imports    --rpx <file> [--module <name>] [--list] [--limit N]
-  translate  --rpx <file> --fn <addr> [--follow N] [--max N] --out <dir> [--report <json>]
+  translate  --rpx <file> --fn <addr> [--follow N] [--max N] [--trace-entries]
+             --out <dir> [--report <json>]
   image      --rpx <file> [--out <dir>] [--expect-sha256 <hex>]
   disasm     --rpx <file> --addr <addr> [--count N]
 
@@ -271,7 +272,7 @@ function scanCallees(rpx, start, end, startSet) {
  * report the CLI writes as translate-report.json, the ordered translated
  * starts and whether the `max` function cap was hit.
  */
-function translateModule({ rpx, analysis, roots, entry, follow = 0, max = 256 }) {
+function translateModule({ rpx, analysis, roots, entry, follow = 0, max = 256, traceEntries = false }) {
     const startSet = new Set([
         ...analysis.functionStarts,
         ...(analysis.pointerStarts || []),
@@ -330,6 +331,7 @@ function translateModule({ rpx, analysis, roots, entry, follow = 0, max = 256 })
             emitSet,
             callSite: rpx.maps.callSite,
             dataSite: rpx.maps.dataSite,
+            traceEntry: traceEntries,
         });
         results.push(r);
     }
@@ -396,6 +398,7 @@ function translateModule({ rpx, analysis, roots, entry, follow = 0, max = 256 })
         root,
         follow,
         max,
+        traceEntries,
         truncated,
         functions: results.map((r) => ({
             name: r.name,
@@ -456,7 +459,16 @@ function cmdTranslate(args) {
     const follow = numArg(args.follow, 0, "--follow");
     const max = Math.max(1, numArg(args.max, 256, "--max"));
 
-    const { gen, report } = translateModule({ rpx, analysis, roots: [root], entry: root, follow, max });
+    const traceEntries = args["trace-entries"] !== undefined;
+    const { gen, report } = translateModule({
+        rpx,
+        analysis,
+        roots: [root],
+        entry: root,
+        follow,
+        max,
+        traceEntries,
+    });
     const genPath = path.join(outDir, "gen.c");
     fs.writeFileSync(genPath, gen);
     const reportPath = args.report || path.join(outDir, "translate-report.json");

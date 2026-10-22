@@ -80,6 +80,59 @@ void ppcx_hle_procui_reset(void);
 #define PPCX_HLE_DATA_SIZE 0x00001000u
 #define PPCX_SYSTEM_INFO_ADDR PPCX_HLE_DATA_ADDR
 
+/*
+ * Default-heap function-pointer imports.
+ *
+ * coreinit exports MEMAllocFromDefaultHeap, MEMAllocFromDefaultHeapEx and
+ * MEMFreeToDefaultHeap as *data* symbols whose four-byte cells hold function
+ * pointers (wut: coreinit/memdefaultheap.h). The real loader writes the
+ * resolved function addresses into the .dimport slots. This runtime instead
+ * returns a cell from ppcx_hle_data_addr and ppcx_import_data_addr stores the
+ * corresponding HLE trampoline there. The cells live in the free part of the
+ * first HLE page, before the TLS block at +0x100.
+ */
+#define PPCX_HLE_DEFAULT_HEAP_FNPTR_ADDR (PPCX_HLE_DATA_ADDR + 0x00000020u)
+#define PPCX_HLE_DEFAULT_HEAP_ALLOC_ADDR (PPCX_HLE_DEFAULT_HEAP_FNPTR_ADDR + 0x0u)
+#define PPCX_HLE_DEFAULT_HEAP_ALLOC_EX_ADDR (PPCX_HLE_DEFAULT_HEAP_FNPTR_ADDR + 0x4u)
+#define PPCX_HLE_DEFAULT_HEAP_FREE_ADDR (PPCX_HLE_DEFAULT_HEAP_FNPTR_ADDR + 0x8u)
+
+/*
+ * Deterministic bump heap used by the default-heap allocator functions.
+ *
+ * This is deliberately not a Cafe OS heap and not a production allocator: it
+ * only hands out non-overlapping aligned ranges inside one mapped writable
+ * region, never reuses freed memory and returns NULL when exhausted. It exists
+ * so early real-code probes can measure the next blocker instead of crashing
+ * in an allocator that is not modeled yet. A proper MEM heap model replaces it
+ * before any game-boot claim.
+ */
+#define PPCX_HLE_HEAP_ADDR 0x60000000u
+#define PPCX_HLE_HEAP_SIZE 0x10000000u /* 256 MiB */
+#define PPCX_HLE_HEAP_HANDLE_STRIDE 0x00000080u
+#define PPCX_HLE_HEAP_DATA_START (PPCX_HLE_HEAP_ADDR + 0x00001000u)
+#define PPCX_HLE_HEAP_HANDLE_MEM1_ADDR PPCX_HLE_HEAP_ADDR
+#define PPCX_HLE_HEAP_HANDLE_MEM2_ADDR (PPCX_HLE_HEAP_ADDR + PPCX_HLE_HEAP_HANDLE_STRIDE)
+#define PPCX_HLE_HEAP_HANDLE_FG_ADDR (PPCX_HLE_HEAP_ADDR + 8u * PPCX_HLE_HEAP_HANDLE_STRIDE)
+
+typedef struct PpcxDefaultHeapState {
+    u32 next;
+    u32 limit;
+    u32 allocations;
+    u32 frees;
+    u32 failures;
+    u32 zero_size;
+    u32 total_bytes;
+    u32 last_size;
+    u32 last_align;
+    u32 last_ptr;
+} PpcxDefaultHeapState;
+
+const PpcxDefaultHeapState *ppcx_hle_default_heap_state(void);
+void ppcx_hle_default_heap_reset(void);
+
+/* True for the three function-pointer data cells above. */
+int ppcx_hle_data_is_fnptr_addr(u32 addr);
+
 typedef struct PpcxSystemInfo {
     u32 bus_clock_speed;
     u32 core_clock_speed;

@@ -25,9 +25,11 @@
  * runtime dispatcher, which makes it possible to find the last translated
  * function executed before a crash. `PPCX_FN_TRACE=1` prints every
  * translated-function entry (the generated code must be built with
- * ppcx_trace_enter calls) and `PPCX_CRASH_TRACE=1` installs a Windows crash
- * handler that dumps the event ring of recent entries when the host takes an
- * access violation.
+ * ppcx_trace_enter calls, i.e. `ppcx translate --trace-entries`) and
+ * `PPCX_CRASH_TRACE=1` installs a Windows crash handler that dumps the event
+ * ring of recent entries when the host takes an access violation.
+ * `PPCX_MAX_FUNCTIONS=N` stops after N trace entries with exit code 10, so a
+ * real startup probe can be bounded deterministically.
  *
  * This code is original to the BotW-PC project and licensed under MIT.
  */
@@ -74,6 +76,7 @@ static int g_trace;
 static int g_strict;
 static int g_dispatch_trace;
 static int g_fn_trace;
+static unsigned g_fn_budget;
 static int g_initialized;
 
 /* Ring of translated-function entries filled by ppcx_trace_enter. */
@@ -81,11 +84,29 @@ static int g_initialized;
 static u32 g_fn_ring[PPCX_FN_RING];
 static unsigned g_fn_entries;
 
+static void ppcx_dump_fn_ring(unsigned limit) {
+    unsigned start = g_fn_entries > limit ? g_fn_entries - limit : 0u;
+    unsigned i;
+    fprintf(stderr, "ppcx: last %u translated function entries:\n",
+            g_fn_entries - start);
+    for (i = start; i < g_fn_entries; i++) {
+        fprintf(stderr, "  [%u] 0x%08X\n", i,
+                (unsigned)g_fn_ring[i & (PPCX_FN_RING - 1u)]);
+    }
+}
+
 void ppcx_trace_enter(u32 addr) {
     g_fn_ring[g_fn_entries & (PPCX_FN_RING - 1u)] = addr;
     g_fn_entries++;
     if (g_fn_trace) {
         fprintf(stderr, "ppcx: fn %u: 0x%08X\n", g_fn_entries, (unsigned)addr);
+    }
+    if (g_fn_budget != 0u && g_fn_entries >= g_fn_budget) {
+        fprintf(stderr,
+                "ppcx: function budget reached (%u entries, PPCX_MAX_FUNCTIONS=%u)\n",
+                g_fn_entries, g_fn_budget);
+        if (!g_fn_trace) ppcx_dump_fn_ring(16u);
+        exit(10);
     }
 }
 
@@ -166,6 +187,16 @@ void ppcx_runtime_init(void) {
     g_strict = getenv("PPCX_HLE_STRICT") != NULL;
     g_dispatch_trace = getenv("PPCX_DISPATCH_TRACE") != NULL;
     g_fn_trace = getenv("PPCX_FN_TRACE") != NULL;
+    {
+        const char *budget = getenv("PPCX_MAX_FUNCTIONS");
+        if (budget != NULL && budget[0] != '\0') {
+            char *end = NULL;
+            unsigned long value = strtoul(budget, &end, 10);
+            if (end != budget && value <= 0xfffffffful) {
+                g_fn_budget = (unsigned)value;
+            }
+        }
+    }
     if (getenv("PPCX_CRASH_TRACE") != NULL) {
         ppcx_install_crash_handler();
     }
@@ -287,6 +318,11 @@ u32 ppcx_import_data_addr(u32 import_index) {
                 name != NULL ? name : "unknown-import", (unsigned)import_index);
         exit(7);
     }
+    /* Some data imports are four-byte function-pointer cells. Store the
+     * matching HLE trampoline so a guest `lwz`/`bctrl` reaches the model. */
+    if (ppcx_hle_data_is_fnptr_addr(addr)) {
+        ppcx_wr32(addr, ppcx_import_addr(import_index));
+    }
     return addr;
 }
 
@@ -332,8 +368,17 @@ int ppcx_run(void) {
                 (unsigned)PPCX_GHS_DATA_ADDR);
         return 8;
     }
+    /* The diagnostic bump heap is guest-writable but deliberately disjoint
+     * from the loaded image, stack and HLE/data pages. */
+    if (ppcx_mem_add_perm(PPCX_HLE_HEAP_ADDR, PPCX_HLE_HEAP_SIZE, "hle-heap",
+                          PPCX_MEM_WRITE) != 0) {
+        fprintf(stderr, "ppcx: cannot map the HLE heap at 0x%08X\n",
+                (unsigned)PPCX_HLE_HEAP_ADDR);
+        return 8;
+    }
     ppcx_hle_tls_reset();
     ppcx_hle_ghs_reset();
+    ppcx_hle_default_heap_reset();
     /*
      * Optional RPX load image (build/ppcx/image.bin, written by
      * `tools/ppcx image`): maps .rodata/.data/.bss so translated code can

@@ -21,9 +21,10 @@ It provides:
   unregistered targets,
 * the HLE entry point for imported system functions, with exact-name coreinit
   core identity/flat-memory/cache/clock/system-info/TLS models, the GHS
-  `__gh_FOPEN_MAX`/`_iob` data imports, the proc_ui lifecycle and explicit
-  diagnostics for everything else. This is not yet full Cafe OS, initialized
-  TLS, stdio or multi-core scheduling.
+  `__gh_FOPEN_MAX`/`_iob` data imports, the diagnostic default/frame-heap
+  models, the proc_ui lifecycle and explicit diagnostics for everything else.
+  This is not yet full Cafe OS, initialized TLS, stdio, a real heap or
+  multi-core scheduling.
 
 ## Build (local prototype)
 
@@ -58,10 +59,15 @@ prototype.
 * `PPCX_IMAGE=<path>` – map a `PPCXIMG1` load image into the arena before the
   entry point runs (fatal — exit code 8 with a diagnostic on stderr — if the
   blob is invalid),
-* `PPCX_HLE_TRACE=1` – log every emulated system call,
-* `PPCX_HLE_STRICT=1` – abort on the first **unimplemented** system call; implemented models remain available.
-* `PPCX_DISPATCH_TRACE=1` – log every control transfer that goes through the
-  dispatcher (the entry point, indirect calls and import trampolines).
+* `PPCX_HLE_TRACE=1` - log every emulated system call,
+* `PPCX_HLE_STRICT=1` - abort on the first **unimplemented** system call; implemented models remain available.
+* `PPCX_DISPATCH_TRACE=1` - log every control transfer that goes through the
+  dispatcher (the entry point, indirect calls and import trampolines),
+* `PPCX_FN_TRACE=1` - log every translated-function entry; the generated unit
+  must be built with `ppcx translate --trace-entries`,
+* `PPCX_MAX_FUNCTIONS=N` - stop after N translated-function entries with exit
+  code 10. Without `PPCX_FN_TRACE`, the last 16 entries are dumped so a bounded
+  probe still ends with a useful checkpoint.
 
 ## Checked guest memory (exit code 9)
 
@@ -134,12 +140,14 @@ built.
 
 ## Implemented HLE subset (synthetic tests)
 
-Forty-one original, exact-name functions are implemented in `ppcx_hle.c`:
-eighteen `coreinit` calls, five `proc_ui` lifecycle calls and eighteen
+Forty-seven original, exact-name functions are implemented in `ppcx_hle.c`:
+twenty-four `coreinit` calls, five `proc_ui` lifecycle calls and eighteen
 `padscore`/`vpad`/`vpadbase` input calls. The coreinit group includes the
 four clock/system-info additions (the deterministic virtual clock described
-below) and the TLS resolver. Two GHS **data** imports are modeled beside the
-functions; they are storage, not dispatch entries.
+below), the TLS resolver and the diagnostic default/frame-heap models. Five
+**data** imports are modeled beside the functions: the two GHS storage
+objects and the three default-heap function-pointer cells (which are
+storage, not dispatch entries).
 
 * **Core identity:** `OSGetCoreCount` (3), `OSGetCoreId` (1),
   `OSGetMainCoreId` (1), `OSIsMainCore` (true). The runtime's only guest CPU
@@ -189,6 +197,20 @@ functions; they are storage, not dispatch entries.
   and flag inspection, not `FILE` semantics, stream buffers, file descriptors
   or stdio calls; see
   [ADR-0006](../../docs/architecture/decisions/0006-ghs-data-imports.md).
+* **Default heap and base frame heap (diagnostic):**
+  `MEMAllocFromDefaultHeap`, `MEMAllocFromDefaultHeapEx` and
+  `MEMFreeToDefaultHeap` are exported as data function pointers. Their cells
+  are at `0x00090020`, `0x00090024` and `0x00090028`; resolving the data
+  import stores the matching HLE trampoline in the cell, so a guest `lwz` +
+  `bctrl` reaches the handler. A single 256 MiB bump arena at `0x60000000`
+  serves default and base frame-heap allocations: data starts at
+  `0x60001000`, the first 4 KiB holds the synthetic MEM1/MEM2/FG heap headers,
+  and the three handles returned by `MEMGetBaseHeapHandle` are `0x60000000`,
+  `0x60000080` and `0x60000400`. `MEMGetAllocatableSizeForFrmHeapEx` and
+  `MEMAllocFromFrmHeapEx` use the same cursor. Freed memory is never reused,
+  frame head/tail frees are absent, and there is no MEM1/MEM2 split, lock or
+  reclaimer. This is probe scaffolding, not a Cafe OS heap; see
+  [ADR-0007](../../docs/architecture/decisions/0007-diagnostic-heap-models.md).
 * **Input (headless placeholder):** the `padscore` calls `KPADGetMplsWorkSize`
   (returns a model-chosen 0x100-byte work size), `KPADInitEx`,
   `KPADSetMplsWorkarea` and `KPADReadEx`; `WPADProbe` (always
@@ -299,8 +321,10 @@ unmodeled data import prints
 `ppcx: unmodeled data import <name> (import N)` and exits 7 instead of
 returning the function trampoline or a silent zero. The translator applies
 `R_PPC_ADDR16_LO` to D-form memory displacements, which is required for the
-real `addis` + `lhz` shape at the `__gh_FOPEN_MAX` sites. The other six v208
-data imports remain unmodeled.
+real `addis` + `lhz` shape at the `__gh_FOPEN_MAX` sites. The other three
+non-heap v208 data imports (`__atexit_cleanup` and the two
+`__cpp_exception_*` pointers) remain unmodeled; the three default-heap
+function-pointer cells are covered by the heap model above.
 
 All other imports remain unimplemented, including filesystem, threading, GX2
 and the Wii Remote audio/motor path. In diagnostic mode they are counted but
@@ -317,11 +341,13 @@ cc -std=c11 -Wall -Wextra -Werror -I src/runtime/include src/runtime/src/ppcx_hl
 ```
 
 The contract test runs on a raw host arena (`ppcx_mem_active` is 0, with a
-stubbed checker) and covers the 41 models, exact-name matching and register
+stubbed checker) and covers the 47 models, exact-name matching and register
 preservation, including the 64-bit clock returns, the system-info and
 calendar layouts, TLS resolution and reset, the GHS data names/values/reset,
-the proc_ui lifecycle, callback table and re-init, and the input init/read,
-touch, callback, motor, gyro and WPAD contracts. The compiled `tests/mem`
+the default-heap allocation/alignment/exhaustion/free bookkeeping, the
+function-pointer data cells and base handles, the proc_ui lifecycle,
+callback table and re-init, and the input init/read, touch, callback, motor,
+gyro and WPAD contracts. The compiled `tests/mem`
 harness links the same `ppcx_hle.c` with the real `ppcx_mem.c` and region
 map: it checks the copy, fill and block semantics, the reserved HLE data
 pages, the guest `OSSystemInfo` record, valid/invalid TLS indices and the GHS
@@ -339,17 +365,21 @@ lifecycle or input calls as evidence of full Cafe OS compatibility.
 `ppcx_hle.c` and `ppcx_image.c`), a generated translation unit and a small
 driver, then boots a game-free RPX from `tests/boot/fixture.js` headless. The
 fixture exercises the real pipeline end to end — analysis, translation, load
-image, checked memory and HLE — in ten scenarios: modeled calls through a
+image, checked memory and HLE — in twelve scenarios: modeled calls through a
 direct `bl` and through an address-taken import's dispatcher trampoline (with
 `PPCX_HLE_TRACE`/`PPCX_DISPATCH_TRACE` checkpoints), a data-import entry that
 takes `__gh_FOPEN_MAX` with `addis` + `lhz` and `_iob` with `addis` + `addi`
-(returning `r3 = 0x18`), an unmodeled import in diagnostic mode,
-`PPCX_HLE_STRICT=1` (exit 5 with the register dump), a pointer-only getter, a
-cross-range tail `b` that must run the mid-body start
+(returning `r3 = 0x18`), a default-heap data-import entry that loads the
+`MEMAllocFromDefaultHeap` function-pointer cell and calls it through `bctrl`
+(returning the first bump allocation at `0x60001000`), an unmodeled import in
+diagnostic mode, `PPCX_HLE_STRICT=1` (exit 5 with the register dump), a
+pointer-only getter, a cross-range tail `b` that must run the mid-body start
 the analysis discovered (`r3 = 2` only if the jump skips `addi r3,0,0x40`), a
 computed `bctr` inline-table switch that must dispatch through its `b` entry
 and return `r3 = 0x11`, the five modeled `proc_ui` lifecycle calls with a
 post-shutdown `EXITING` status (`r3 = 0x47`), an unmapped read (exit 9) and the
 same boot without `PPCX_IMAGE` (exit 9 at the first data read). Every
 stderr/stdout line and every guest-memory probe is compared with the authored
-expectations, and the boot run must repeat byte-identically.
+expectations, and the boot run must repeat byte-identically. The current
+harness reports **12 scenarios, 9 compiled entries, 63 transcript lines and
+128 memory-probe lines**.

@@ -1013,6 +1013,118 @@ static int test_input_models(void) {
     return 0;
 }
 
+static int test_default_heap(void) {
+    Cpu cpu;
+    const PpcxDefaultHeapState *s;
+    u32 first;
+    u32 aligned;
+
+    memset(&cpu, 0, sizeof cpu);
+    ppcx_hle_default_heap_reset();
+    s = ppcx_hle_default_heap_state();
+    if (s->next != PPCX_HLE_HEAP_DATA_START ||
+        s->limit != PPCX_HLE_HEAP_ADDR + PPCX_HLE_HEAP_SIZE) {
+        return fail("default heap reset state");
+    }
+
+    cpu.gpr[3] = 0x30u;
+    if (!ppcx_hle_dispatch_named(&cpu, "coreinit.MEMAllocFromDefaultHeap")) {
+        return fail("default heap alloc not modeled");
+    }
+    first = cpu.gpr[3];
+    if (first != PPCX_HLE_HEAP_DATA_START) return fail("default heap first allocation address");
+    s = ppcx_hle_default_heap_state();
+    if (s->allocations != 1u || s->total_bytes != 0x30u ||
+        s->next != PPCX_HLE_HEAP_DATA_START + 0x30u) {
+        return fail("default heap first allocation bookkeeping");
+    }
+
+    cpu.gpr[3] = 0x80u;
+    cpu.gpr[4] = 0x100u;
+    if (!ppcx_hle_dispatch_named(&cpu, "coreinit.MEMAllocFromDefaultHeapEx")) {
+        return fail("default heap aligned alloc not modeled");
+    }
+    aligned = cpu.gpr[3];
+    if (aligned != PPCX_HLE_HEAP_DATA_START + 0x100u) return fail("default heap alignment");
+    s = ppcx_hle_default_heap_state();
+    if (s->last_align != 0x100u || s->next != aligned + 0x80u) {
+        return fail("default heap aligned bookkeeping");
+    }
+
+    cpu.gpr[3] = 0x10u;
+    cpu.gpr[4] = 6u;
+    if (!ppcx_hle_dispatch_named(&cpu, "coreinit.MEMAllocFromDefaultHeapEx") || cpu.gpr[3] != 0u) {
+        return fail("default heap rejected non-power-of-two alignment");
+    }
+
+    cpu.gpr[3] = 0u;
+    if (!ppcx_hle_dispatch_named(&cpu, "coreinit.MEMAllocFromDefaultHeap") || cpu.gpr[3] != 0u) {
+        return fail("default heap zero-size result");
+    }
+    s = ppcx_hle_default_heap_state();
+    if (s->zero_size != 1u) return fail("default heap zero-size bookkeeping");
+
+    cpu.gpr[3] = PPCX_HLE_HEAP_SIZE;
+    if (!ppcx_hle_dispatch_named(&cpu, "coreinit.MEMAllocFromDefaultHeap") || cpu.gpr[3] != 0u) {
+        return fail("default heap exhaustion");
+    }
+    s = ppcx_hle_default_heap_state();
+    if (s->failures != 2u) return fail("default heap failure bookkeeping");
+
+    cpu.gpr[3] = first;
+    if (!ppcx_hle_dispatch_named(&cpu, "coreinit.MEMFreeToDefaultHeap")) {
+        return fail("default heap free not modeled");
+    }
+    s = ppcx_hle_default_heap_state();
+    if (s->frees != 1u || s->next != aligned + 0x80u) {
+        return fail("default heap free must not recycle in the diagnostic model");
+    }
+
+    cpu.gpr[3] = 8u;
+    if (!ppcx_hle_dispatch_named(&cpu, "coreinit.MEMGetBaseHeapHandle") ||
+        cpu.gpr[3] != PPCX_HLE_HEAP_HANDLE_FG_ADDR) {
+        return fail("frame heap foreground base handle");
+    }
+    cpu.gpr[3] = 99u;
+    if (!ppcx_hle_dispatch_named(&cpu, "coreinit.MEMGetBaseHeapHandle") || cpu.gpr[3] != 0u) {
+        return fail("frame heap unknown base handle");
+    }
+
+    cpu.gpr[3] = PPCX_HLE_HEAP_HANDLE_FG_ADDR;
+    cpu.gpr[4] = 0x100u;
+    if (!ppcx_hle_dispatch_named(&cpu, "coreinit.MEMGetAllocatableSizeForFrmHeapEx")) {
+        return fail("frame heap allocatable not modeled");
+    }
+    if (cpu.gpr[3] != PPCX_HLE_HEAP_ADDR + PPCX_HLE_HEAP_SIZE - (PPCX_HLE_HEAP_DATA_START + 0x200u)) {
+        return fail("frame heap allocatable size");
+    }
+
+    cpu.gpr[3] = PPCX_HLE_HEAP_HANDLE_FG_ADDR;
+    cpu.gpr[4] = 0x20u;
+    cpu.gpr[5] = 0x100u;
+    if (!ppcx_hle_dispatch_named(&cpu, "coreinit.MEMAllocFromFrmHeapEx") ||
+        cpu.gpr[3] != PPCX_HLE_HEAP_DATA_START + 0x200u) {
+        return fail("frame heap aligned allocation");
+    }
+    s = ppcx_hle_default_heap_state();
+    if (s->next != PPCX_HLE_HEAP_DATA_START + 0x220u) {
+        return fail("frame heap allocation bookkeeping");
+    }
+
+    if (ppcx_hle_data_addr("coreinit.MEMAllocFromDefaultHeap") != PPCX_HLE_DEFAULT_HEAP_ALLOC_ADDR ||
+        ppcx_hle_data_addr("coreinit.MEMAllocFromDefaultHeapEx") != PPCX_HLE_DEFAULT_HEAP_ALLOC_EX_ADDR ||
+        ppcx_hle_data_addr("coreinit.MEMFreeToDefaultHeap") != PPCX_HLE_DEFAULT_HEAP_FREE_ADDR) {
+        return fail("default heap function-pointer data addresses");
+    }
+    if (!ppcx_hle_data_is_fnptr_addr(PPCX_HLE_DEFAULT_HEAP_ALLOC_ADDR) ||
+        !ppcx_hle_data_is_fnptr_addr(PPCX_HLE_DEFAULT_HEAP_ALLOC_EX_ADDR) ||
+        !ppcx_hle_data_is_fnptr_addr(PPCX_HLE_DEFAULT_HEAP_FREE_ADDR) ||
+        ppcx_hle_data_is_fnptr_addr(PPCX_GH_FOPEN_MAX_ADDR)) {
+        return fail("default heap function-pointer address predicate");
+    }
+    return 0;
+}
+
 static int test_exact_names(void) {
     Cpu cpu;
     Cpu before;
@@ -1052,8 +1164,9 @@ int main(void) {
     if (test_clock_models() != 0) return 1;
     if (test_tls_model() != 0) return 1;
     if (test_ghs_data_model() != 0) return 1;
+    if (test_default_heap() != 0) return 1;
     if (test_input_models() != 0) return 1;
     if (test_exact_names() != 0) return 1;
-    puts("hle: core identity, memory/cache, proc_ui lifecycle, virtual clock/system info, TLS, GHS data and input models, exact matching and register preservation OK");
+    puts("hle: core identity, memory/cache, proc_ui lifecycle, virtual clock/system info, TLS, GHS data, default heap and input models, exact matching and register preservation OK");
     return 0;
 }

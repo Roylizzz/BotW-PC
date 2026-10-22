@@ -91,7 +91,7 @@ function buildScenario() {
     const blob = serializeImage(plan);
 
     const e = f.expected;
-    const translatedFunctions = 16; /* the authored scenarios plus the helper,
+    const translatedFunctions = 17; /* the authored scenarios plus the helper,
                                       tail target, inline branch-table entries
                                       and switch case bodies, including the
                                       data-import entry */
@@ -129,9 +129,9 @@ function buildScenario() {
                 imageLine,
                 entryLine(e.entry.boot),
                 `ppcx: dispatch 0x${hex8(e.entry.boot)}`,
-                "ppcx: HLE modeled #1: coreinit.memcpy (import 4), r3=0x00020300",
-                "ppcx: dispatch 0x50000000", /* import trampoline (ADDR16 site) */
-                "ppcx: HLE modeled #2: coreinit.OSBlockMove (import 0), r3=0x00020310",
+                "ppcx: HLE modeled #1: coreinit.memcpy (import 5), r3=0x00020300",
+                "ppcx: dispatch 0x50000008", /* import trampoline (ADDR16 site) */
+                "ppcx: HLE modeled #2: coreinit.OSBlockMove (import 1), r3=0x00020310",
                 "ppcx: entry returned, r3 = 0x11223344",
                 "ppcx: HLE calls: 2 (unimplemented services remain)",
             ],
@@ -152,6 +152,21 @@ function buildScenario() {
             stdout: probesToStdout(initialProbes, 0, 0),
         },
         {
+            id: "memory",
+            entry: e.entry.memory,
+            env: { PPCX_HLE_TRACE: "1" },
+            image: true,
+            status: 0,
+            stderr: [
+                imageLine,
+                entryLine(e.entry.memory),
+                "ppcx: HLE modeled #1: coreinit.MEMAllocFromDefaultHeap (import 0), r3=0x60001000",
+                "ppcx: entry returned, r3 = 0x60001000",
+                "ppcx: HLE calls: 1 (unimplemented services remain)",
+            ],
+            stdout: probesToStdout(initialProbes, 0, 1),
+        },
+        {
             id: "tolerant",
             entry: e.entry.strict,
             env: { PPCX_HLE_TRACE: "1" },
@@ -160,7 +175,7 @@ function buildScenario() {
             stderr: [
                 imageLine,
                 entryLine(e.entry.strict),
-                "ppcx: HLE unimplemented #1: coreinit.OSSleepTicks (import 1) [diagnostic no-op]",
+                "ppcx: HLE unimplemented #1: coreinit.OSSleepTicks (import 2) [diagnostic no-op]",
                 "ppcx: entry returned, r3 = 0x00000001",
                 "ppcx: HLE calls: 1 (unimplemented services remain)",
             ],
@@ -175,7 +190,7 @@ function buildScenario() {
             stderr: [
                 imageLine,
                 entryLine(e.entry.strict),
-                "ppcx: unimplemented HLE: coreinit.OSSleepTicks (import 1) in strict mode",
+                "ppcx: unimplemented HLE: coreinit.OSSleepTicks (import 2) in strict mode",
                 dumpLine(FIRST_SP - 16, 0, 1, 0x000100a4, 0),
             ],
             stdout: [],
@@ -193,6 +208,20 @@ function buildScenario() {
                 "ppcx: HLE calls: 0 (unimplemented services remain)",
             ],
             stdout: probesToStdout(initialProbes, 0, 0),
+        },
+        {
+            id: "budget",
+            entry: e.entry.pointer,
+            env: { PPCX_FN_TRACE: "1", PPCX_MAX_FUNCTIONS: "1" },
+            image: true,
+            status: 10,
+            stderr: [
+                imageLine,
+                entryLine(e.entry.pointer),
+                `ppcx: fn 1: 0x${hex8(e.entry.pointer)}`,
+                "ppcx: function budget reached (1 entries, PPCX_MAX_FUNCTIONS=1)",
+            ],
+            stdout: [],
         },
         {
             id: "tail",
@@ -234,13 +263,13 @@ function buildScenario() {
             stderr: [
                 imageLine,
                 entryLine(e.entry.procui),
-                "ppcx: HLE modeled #1: proc_ui.ProcUIInit (import 6), r3=0x00010048",
-                "ppcx: HLE modeled #2: proc_ui.ProcUIRegisterCallback (import 8), r3=0x00000005",
-                "ppcx: HLE modeled #3: proc_ui.ProcUIProcessMessages (import 7), r3=0x00000000",
-                "ppcx: HLE modeled #4: proc_ui.ProcUIDrawDoneRelease (import 5), r3=0x00000000",
-                "ppcx: HLE modeled #5: proc_ui.ProcUIProcessMessages (import 7), r3=0x00000000",
-                "ppcx: HLE modeled #6: proc_ui.ProcUIShutdown (import 9), r3=0x00000000",
-                "ppcx: HLE modeled #7: proc_ui.ProcUIProcessMessages (import 7), r3=0x00000003",
+                "ppcx: HLE modeled #1: proc_ui.ProcUIInit (import 7), r3=0x00010048",
+                "ppcx: HLE modeled #2: proc_ui.ProcUIRegisterCallback (import 9), r3=0x00000005",
+                "ppcx: HLE modeled #3: proc_ui.ProcUIProcessMessages (import 8), r3=0x00000000",
+                "ppcx: HLE modeled #4: proc_ui.ProcUIDrawDoneRelease (import 6), r3=0x00000000",
+                "ppcx: HLE modeled #5: proc_ui.ProcUIProcessMessages (import 8), r3=0x00000000",
+                "ppcx: HLE modeled #6: proc_ui.ProcUIShutdown (import 10), r3=0x00000000",
+                "ppcx: HLE modeled #7: proc_ui.ProcUIProcessMessages (import 8), r3=0x00000003",
                 "ppcx: entry returned, r3 = 0x00000047",
                 "ppcx: HLE calls: 7 (unimplemented services remain)",
             ],
@@ -405,6 +434,7 @@ function runBoot(opts = {}) {
         f.expected.entry.switch,
         f.expected.entry.procui,
         f.expected.entry.data,
+        f.expected.entry.memory,
         /* The computed bctr target is invisible to the translator's static
          * callee walk, so the harness emits the discovered table entries as
          * explicit roots (same reason the pointer-only getter is a root). */
@@ -415,14 +445,21 @@ function runBoot(opts = {}) {
         if (translationByEntry.has(scenario.entry)) continue;
         translationByEntry.set(
             scenario.entry,
-            ppcx.translateModule({ rpx, analysis, roots, entry: scenario.entry, follow: 1 })
+            ppcx.translateModule({
+                rpx,
+                analysis,
+                roots,
+                entry: scenario.entry,
+                follow: 1,
+                traceEntries: true,
+            })
         );
     }
     const reference = translationByEntry.get(f.expected.entry.boot);
-    if (reference.report.totals.functions !== 16) {
+    if (reference.report.totals.functions !== 17) {
         failures.push({
             id: "translate.functions",
-            detail: `expected 16 translated functions, got ${reference.report.totals.functions}`,
+            detail: `expected 17 translated functions, got ${reference.report.totals.functions}`,
         });
     }
     if (reference.report.totals.unsupportedInstructions !== 0 || reference.report.totals.warnings !== 0) {
@@ -431,10 +468,10 @@ function runBoot(opts = {}) {
             detail: `${reference.report.totals.unsupportedInstructions} unsupported, ${reference.report.totals.warnings} warnings`,
         });
     }
-    if (reference.report.totals.instructions !== 133) {
+    if (reference.report.totals.instructions !== 146) {
         failures.push({
             id: "translate.instructions",
-            detail: `expected 133 instructions, got ${reference.report.totals.instructions}`,
+            detail: `expected 146 instructions, got ${reference.report.totals.instructions}`,
         });
     }
     const tailCall = `PPCX_TAILCALL(c, f_${hex8(f.expected.tailStarts[0])});`;
@@ -449,16 +486,17 @@ function runBoot(opts = {}) {
         });
     }
     const wantHle = new Map([
-        [0, { label: "coreinit.OSBlockMove", calls: 0, addressTaken: 1 }],
-        [1, { label: "coreinit.OSSleepTicks", calls: 1, addressTaken: 0 }],
-        [2, { label: "coreinit.__gh_FOPEN_MAX", calls: 0, addressTaken: 1 }],
-        [3, { label: "coreinit._iob", calls: 0, addressTaken: 1 }],
-        [4, { label: "coreinit.memcpy", calls: 1, addressTaken: 0 }],
-        [5, { label: "proc_ui.ProcUIDrawDoneRelease", calls: 1, addressTaken: 0 }],
-        [6, { label: "proc_ui.ProcUIInit", calls: 1, addressTaken: 0 }],
-        [7, { label: "proc_ui.ProcUIProcessMessages", calls: 3, addressTaken: 0 }],
-        [8, { label: "proc_ui.ProcUIRegisterCallback", calls: 1, addressTaken: 0 }],
-        [9, { label: "proc_ui.ProcUIShutdown", calls: 1, addressTaken: 0 }],
+        [0, { label: "coreinit.MEMAllocFromDefaultHeap", calls: 0, addressTaken: 1 }],
+        [1, { label: "coreinit.OSBlockMove", calls: 0, addressTaken: 1 }],
+        [2, { label: "coreinit.OSSleepTicks", calls: 1, addressTaken: 0 }],
+        [3, { label: "coreinit.__gh_FOPEN_MAX", calls: 0, addressTaken: 1 }],
+        [4, { label: "coreinit._iob", calls: 0, addressTaken: 1 }],
+        [5, { label: "coreinit.memcpy", calls: 1, addressTaken: 0 }],
+        [6, { label: "proc_ui.ProcUIDrawDoneRelease", calls: 1, addressTaken: 0 }],
+        [7, { label: "proc_ui.ProcUIInit", calls: 1, addressTaken: 0 }],
+        [8, { label: "proc_ui.ProcUIProcessMessages", calls: 3, addressTaken: 0 }],
+        [9, { label: "proc_ui.ProcUIRegisterCallback", calls: 1, addressTaken: 0 }],
+        [10, { label: "proc_ui.ProcUIShutdown", calls: 1, addressTaken: 0 }],
     ]);
     if (reference.report.hleImportsUsed.length !== wantHle.size) {
         failures.push({ id: "translate.hle", detail: JSON.stringify(reference.report.hleImportsUsed) });
@@ -503,6 +541,7 @@ function runBoot(opts = {}) {
         delete env.PPCX_HLE_STRICT;
         delete env.PPCX_DISPATCH_TRACE;
         delete env.PPCX_FN_TRACE;
+        delete env.PPCX_MAX_FUNCTIONS;
         delete env.PPCX_CRASH_TRACE;
         Object.assign(env, scenario.env);
         if (scenario.image) env.PPCX_IMAGE = imagePath;

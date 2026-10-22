@@ -13,12 +13,16 @@
  *     entry whose `b` crosses into the middle of another function's range (the
  *     mid-body entry point is discovered by the cross-range fixpoint), and a
  *     proc_ui lifecycle entry (init, callback registration, two message
- *     pumps around DrawDoneRelease, shutdown and a post-shutdown pump);
+ *     pumps around DrawDoneRelease, shutdown and a post-shutdown pump), a
+ *     data-import entry for the GHS stdio objects, and a default-heap entry
+ *     that loads the imported function pointer and calls it through `bctrl`;
  *   - two `.fimport_*` sections whose symbols the `.rela.text` sites
  *     reference (`coreinit.memcpy`, `coreinit.OSBlockMove`,
  *     `coreinit.OSSleepTicks` and all five imported `proc_ui` functions), with
  *     one REL24 call site per function and an ADDR16_HA/LO pair for the
  *     address-taken `OSBlockMove`;
+ *   - a `.dimport_coreinit` section for `__gh_FOPEN_MAX`, `_iob` and
+ *     `MEMAllocFromDefaultHeap` (the last one is a function-pointer cell);
  *   - `.rodata` with three `R_PPC_ADDR32` pointers (one with an addend) and
  *     two applied TLS relocations (`R_PPC_DTPMOD32`/`R_PPC_DTPREL32`),
  *     `.data` with authored words and a NOBITS `.bss`;
@@ -32,7 +36,7 @@
  */
 
 const TEXT_ADDR = 0x00010000;
-const TEXT_SIZE = 0x0000021c;
+const TEXT_SIZE = 0x00000250;
 
 const SLOT_MEMCPY = 0x00020000;
 const SLOT_OSBLOCKMOVE = 0x00020008;
@@ -44,6 +48,7 @@ const SLOT_PROCUIREGISTERCALLBACK = 0x00020038;
 const SLOT_PROCUISHUTDOWN = 0x00020040;
 const SLOT_GH_FOPEN_MAX = 0x00020050;
 const SLOT_IOB = 0x00020058;
+const SLOT_MEMALLOCDEFAULT = 0x00020060;
 
 /* Runtime-owned data addresses, identical to ppcx_hle.h. The fixture probes
  * them after boot to prove the translator used the data table. */
@@ -76,6 +81,7 @@ const SYM = {
     tls_value: 15,
     __gh_FOPEN_MAX: 20,
     _iob: 21,
+    MEMAllocFromDefaultHeap: 23,
 };
 
 /* Authored entry addresses the harness references. `tail` is booted; `split`
@@ -91,6 +97,7 @@ const ENTRY = {
     switch: 0x00010118,
     procui: 0x00010184,
     data: 0x000101e8,
+    memory: 0x0001021c,
 };
 
 /* Mid-body entry that only the cross-range `b` in `func_t` reaches. */
@@ -366,6 +373,20 @@ function buildText() {
     a.add(3, 3, 6);
     a.lwz(0, 1, 20).mtlr().addi(1, 1, 16).blr();
 
+    /* Default-heap data-import entry: load the address of the imported
+     * function-pointer cell, load the pointer the runtime stored there, and
+     * call it through bctrl. This is the shape real code uses for
+     * coreinit.MEMAllocFromDefaultHeap; a plain REL24 HLE substitution would
+     * miss it. The first allocation after reset must start at the data area
+     * of the diagnostic bump heap. */
+    a.label("func_m");
+    a.stwu(1, 1, -16).mflr().stw(0, 1, 20);
+    a.addisImport(12, SYM.MEMAllocFromDefaultHeap).addiImport(12, SYM.MEMAllocFromDefaultHeap);
+    a.lwz(12, 12, 0);
+    a.addi(3, 0, 0x20);
+    a.mtctr(12).bctrl();
+    a.lwz(0, 1, 20).mtlr().addi(1, 1, 16).blr();
+
     return a.finish();
 }
 
@@ -400,6 +421,7 @@ function build() {
         switch: labels.get("func_s"),
         procui: labels.get("func_p"),
         data: labels.get("func_i"),
+        memory: labels.get("func_m"),
     };
     const tailTarget = labels.get("func_e_mid");
     if (tailTarget !== TAIL_TARGET) {
@@ -463,6 +485,8 @@ function build() {
         { name: "__gh_FOPEN_MAX", value: SLOT_GH_FOPEN_MAX, size: 2, info: 0x11, shndx: 13 },
         { name: "_iob", value: SLOT_IOB, size: 0x140, info: 0x11, shndx: 13 },
         { name: "func_i", value: entries.data, size: 0x34, info: 0x12, shndx: 1 },
+        { name: "MEMAllocFromDefaultHeap", value: SLOT_MEMALLOCDEFAULT, size: 4, info: 0x11, shndx: 13 },
+        { name: "func_m", value: entries.memory, size: 0x34, info: 0x12, shndx: 1 },
     ];
     for (const s of symbolDefs) {
         if (s.name !== "") addString(s.name);
@@ -541,7 +565,7 @@ function build() {
         { name: ".rela.text", type: SECTION_TYPE.RELA, flags: 0, addr: 0, data: relaText, link: 8, info: 1, align: 4, entsize: 12 },
         { name: ".rela.rodata", type: SECTION_TYPE.RELA, flags: 0, addr: 0, data: relaRoData, link: 8, info: 4, align: 4, entsize: 12 },
         { name: ".comment", type: SECTION_TYPE.PROGBITS, flags: 0, addr: 0, data: Buffer.from("#synthetic-boot\n\0", "ascii"), link: 0, info: 0, align: 1 },
-        { name: ".dimport_coreinit", type: SECTION_TYPE.PROGBITS, flags: 0x2, addr: SLOT_GH_FOPEN_MAX, data: Buffer.alloc(16), link: 0, info: 0, align: 8 },
+        { name: ".dimport_coreinit", type: SECTION_TYPE.PROGBITS, flags: 0x2, addr: SLOT_GH_FOPEN_MAX, data: Buffer.alloc(32), link: 0, info: 0, align: 8 },
     ];
 
     /* File layout: header, section payloads, then the section header table. */
@@ -623,7 +647,7 @@ function build() {
             rodata: { addr: RODATA_ADDR, size: RODATA_SIZE },
             data: { addr: DATA_ADDR, size: DATA_SIZE },
             bss: { addr: BSS_ADDR, size: BSS_SIZE },
-            functionStarts: [ENTRY.boot, ENTRY.helper, ENTRY.strict, ENTRY.fault, ENTRY.split, ENTRY.tail, ENTRY.switch, ENTRY.procui, ENTRY.data],
+            functionStarts: [ENTRY.boot, ENTRY.helper, ENTRY.strict, ENTRY.fault, ENTRY.split, ENTRY.tail, ENTRY.switch, ENTRY.procui, ENTRY.data, ENTRY.memory],
             pointerStarts: [ENTRY.pointer],
             tableStarts: [ENTRY.switch + 0x24, ENTRY.switch + 0x28, ENTRY.switch + 0x2c],
             tailStarts: [TAIL_TARGET, ENTRY.switch + 0x30, ENTRY.switch + 0x44, ENTRY.switch + 0x58],

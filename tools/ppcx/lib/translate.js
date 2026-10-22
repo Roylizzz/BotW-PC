@@ -76,6 +76,9 @@ function asSet(v, fallback) {
  *   dataSite   Map: relocation offset (instruction + 2) -> { index, type, kind }
  *              kind selects the function trampoline (function) or the GHS
  *              data address table (data)
+ *   traceEntry when true, call ppcx_trace_enter(start) before the body. This
+ *              is off by default so ordinary generated code stays lean; real
+ *              startup probes turn it on to feed the runtime ring/budget.
  */
 function translateFunction(opts) {
     const {
@@ -87,6 +90,7 @@ function translateFunction(opts) {
         textEnd = base + data.length,
         callSite = new Map(),
         dataSite = new Map(),
+        traceEntry = false,
     } = opts;
     const startSet = asSet(opts.startSet, new Set([start]));
     const emitSet = asSet(opts.emitSet, new Set([start]));
@@ -353,6 +357,7 @@ function translateFunction(opts) {
     emitRaw(`/* ${fnName(start)}: 0x${hex8(start)}..0x${hex8(end)} (${(end - start) / 4} instructions) */`);
     emitRaw(`static void ${name}(Cpu *c) {`);
     if (needsEa) emit("u32 ea;");
+    if (traceEntry) emit(`ppcx_trace_enter(${addrHex(start)});`);
 
     let lastTransfer = false;
 

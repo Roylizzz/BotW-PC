@@ -27,6 +27,7 @@ function translate(words, opts = {}) {
         emitSet: opts.emitSet || [start],
         callSite: opts.callSite || new Map(),
         dataSite: opts.dataSite || new Map(),
+        traceEntry: opts.traceEntry || false,
     });
 }
 
@@ -37,6 +38,17 @@ test("translates addi and blr into a C function", () => {
     assert.match(r.code, /return;/);
     assert.doesNotMatch(r.code, /PPCX_UNIMPL/);
     assert.equal(r.unsupported.length, 0);
+});
+
+test("traceEntry emits one entry marker before the body", () => {
+    const r = translate([0x38600005, 0x4e800020], { traceEntry: true });
+    assert.match(r.code, /static void f_00001000\(Cpu \*c\) \{\n    ppcx_trace_enter\(0x00001000u\);\n/);
+    assert.equal((r.code.match(/ppcx_trace_enter/g) || []).length, 1);
+});
+
+test("traceEntry is off by default", () => {
+    const r = translate([0x38600005, 0x4e800020]);
+    assert.doesNotMatch(r.code, /ppcx_trace_enter/);
 });
 
 test("stwu stores the old value and then updates r1", () => {

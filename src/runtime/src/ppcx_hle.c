@@ -424,6 +424,137 @@ static void hle_tls_get_addr(Cpu *cpu) {
     cpu->gpr[3] = result;
 }
 
+/* ---- default heap -----------------------------------------------------
+ *
+ * MEMAllocFromDefaultHeap/Ex and MEMFreeToDefaultHeap are imported as data
+ * function pointers, not as callable REL24 imports. The model is a single
+ * deterministic bump arena: enough to let early real-code probes run through
+ * GraphicsSystem allocation, but not a MEM1/MEM2 heap and not a reclaimer.
+ */
+static PpcxDefaultHeapState g_default_heap;
+
+const PpcxDefaultHeapState *ppcx_hle_default_heap_state(void) {
+    return &g_default_heap;
+}
+
+static u32 hle_base_heap_handle(u32 type) {
+    switch (type) {
+    case 0u: return PPCX_HLE_HEAP_HANDLE_MEM1_ADDR; /* MEM_BASE_HEAP_MEM1 */
+    case 1u: return PPCX_HLE_HEAP_HANDLE_MEM2_ADDR; /* MEM_BASE_HEAP_MEM2 */
+    case 8u: return PPCX_HLE_HEAP_HANDLE_FG_ADDR;   /* MEM_BASE_HEAP_FG */
+    default: return 0u;
+    }
+}
+
+static int hle_is_base_heap_handle(u32 handle) {
+    return handle == PPCX_HLE_HEAP_HANDLE_MEM1_ADDR ||
+           handle == PPCX_HLE_HEAP_HANDLE_MEM2_ADDR ||
+           handle == PPCX_HLE_HEAP_HANDLE_FG_ADDR;
+}
+
+static void hle_write_heap_header(u32 handle) {
+    /* The guest only passes these handles back to the MEM HLE, but writing a
+     * plausible MEMFrmHeap header keeps diagnostics and guest reads honest.
+     * The contract test runs on a raw arena without the runtime region map,
+     * so it deliberately skips guest-memory writes. */
+    if (!ppcx_mem_active) return;
+    ppcx_wr32(handle + 0x00u, 0x46524D48u); /* MEM_FRAME_HEAP_TAG */
+    ppcx_wr32(handle + 0x18u, PPCX_HLE_HEAP_DATA_START);
+    ppcx_wr32(handle + 0x1Cu, PPCX_HLE_HEAP_ADDR + PPCX_HLE_HEAP_SIZE);
+    ppcx_wr32(handle + 0x40u, PPCX_HLE_HEAP_DATA_START); /* head */
+    ppcx_wr32(handle + 0x44u, PPCX_HLE_HEAP_DATA_START); /* tail */
+    ppcx_wr32(handle + 0x48u, 0u);                       /* previousState */
+}
+
+void ppcx_hle_default_heap_reset(void) {
+    memset(&g_default_heap, 0, sizeof g_default_heap);
+    g_default_heap.next = PPCX_HLE_HEAP_DATA_START;
+    g_default_heap.limit = PPCX_HLE_HEAP_ADDR + PPCX_HLE_HEAP_SIZE;
+    hle_write_heap_header(PPCX_HLE_HEAP_HANDLE_MEM1_ADDR);
+    hle_write_heap_header(PPCX_HLE_HEAP_HANDLE_MEM2_ADDR);
+    hle_write_heap_header(PPCX_HLE_HEAP_HANDLE_FG_ADDR);
+}
+
+static u32 hle_default_heap_alloc(u32 size, u32 alignment) {
+    PpcxDefaultHeapState *s = &g_default_heap;
+    u32 aligned;
+    u32 effective_align = alignment;
+
+    s->allocations++;
+    s->last_size = size;
+    if (effective_align < 4u) effective_align = 4u;
+    s->last_align = effective_align;
+
+    if (size == 0u) {
+        s->zero_size++;
+        s->last_ptr = 0u;
+        return 0u;
+    }
+    if ((effective_align & (effective_align - 1u)) != 0u) {
+        s->failures++;
+        s->last_ptr = 0u;
+        return 0u;
+    }
+    aligned = (s->next + effective_align - 1u) & ~(effective_align - 1u);
+    if (aligned < s->next || (u64)aligned + (u64)size > (u64)s->limit) {
+        s->failures++;
+        s->last_ptr = 0u;
+        return 0u;
+    }
+    s->next = aligned + size;
+    s->total_bytes += size;
+    s->last_ptr = aligned;
+    return aligned;
+}
+
+static void hle_alloc_default(Cpu *cpu) {
+    cpu->gpr[3] = hle_default_heap_alloc(cpu->gpr[3], 4u);
+}
+
+static void hle_alloc_default_ex(Cpu *cpu) {
+    s32 alignment = (s32)cpu->gpr[4];
+    cpu->gpr[3] = hle_default_heap_alloc(cpu->gpr[3], alignment > 0 ? (u32)alignment : 0u);
+}
+
+static void hle_free_default(Cpu *cpu) {
+    (void)cpu;
+    g_default_heap.frees++;
+}
+
+static u32 hle_default_heap_allocatable(u32 alignment) {
+    PpcxDefaultHeapState *s = &g_default_heap;
+    u32 effective_align = alignment < 4u ? 4u : alignment;
+    u32 aligned;
+
+    if ((effective_align & (effective_align - 1u)) != 0u) return 0u;
+    aligned = (s->next + effective_align - 1u) & ~(effective_align - 1u);
+    if (aligned < s->next || aligned > s->limit) return 0u;
+    return s->limit - aligned;
+}
+
+static void hle_get_base_heap(Cpu *cpu) {
+    cpu->gpr[3] = hle_base_heap_handle(cpu->gpr[3]);
+}
+
+static void hle_frm_heap_allocatable(Cpu *cpu) {
+    u32 handle = cpu->gpr[3];
+    if (!hle_is_base_heap_handle(handle)) {
+        cpu->gpr[3] = 0u;
+        return;
+    }
+    cpu->gpr[3] = hle_default_heap_allocatable(cpu->gpr[4]);
+}
+
+static void hle_frm_heap_alloc(Cpu *cpu) {
+    u32 handle = cpu->gpr[3];
+    if (!hle_is_base_heap_handle(handle)) {
+        g_default_heap.failures++;
+        cpu->gpr[3] = 0u;
+        return;
+    }
+    cpu->gpr[3] = hle_default_heap_alloc(cpu->gpr[4], cpu->gpr[5]);
+}
+
 /* ---- GHS C-library data ------------------------------------------------
  * __gh_FOPEN_MAX and _iob are data imports, so they are resolved by name to
  * storage in a page that is separate from the OSSystemInfo/TLS page. The
@@ -433,11 +564,26 @@ static void hle_tls_get_addr(Cpu *cpu) {
  */
 u32 ppcx_hle_data_addr(const char *qualified_name) {
     if (qualified_name == NULL) return 0u;
+    if (strcmp(qualified_name, "coreinit.MEMAllocFromDefaultHeap") == 0) {
+        return PPCX_HLE_DEFAULT_HEAP_ALLOC_ADDR;
+    }
+    if (strcmp(qualified_name, "coreinit.MEMAllocFromDefaultHeapEx") == 0) {
+        return PPCX_HLE_DEFAULT_HEAP_ALLOC_EX_ADDR;
+    }
+    if (strcmp(qualified_name, "coreinit.MEMFreeToDefaultHeap") == 0) {
+        return PPCX_HLE_DEFAULT_HEAP_FREE_ADDR;
+    }
     if (strcmp(qualified_name, "coreinit.__gh_FOPEN_MAX") == 0) {
         return PPCX_GH_FOPEN_MAX_ADDR;
     }
     if (strcmp(qualified_name, "coreinit._iob") == 0) return PPCX_GHS_IOB_ADDR;
     return 0u;
+}
+
+int ppcx_hle_data_is_fnptr_addr(u32 addr) {
+    return addr == PPCX_HLE_DEFAULT_HEAP_ALLOC_ADDR ||
+           addr == PPCX_HLE_DEFAULT_HEAP_ALLOC_EX_ADDR ||
+           addr == PPCX_HLE_DEFAULT_HEAP_FREE_ADDR;
 }
 
 void ppcx_hle_ghs_reset(void) {
@@ -683,6 +829,12 @@ static const PpcxHleEntry hle_registry[] = {
     { "coreinit.DCFlushRangeNoSync", hle_dc_flush_range_nosync },
     { "coreinit.DCInvalidateRange", hle_dc_invalidate_range },
     { "coreinit.OSMemoryBarrier", hle_memory_barrier },
+    { "coreinit.MEMAllocFromDefaultHeap", hle_alloc_default },
+    { "coreinit.MEMAllocFromDefaultHeapEx", hle_alloc_default_ex },
+    { "coreinit.MEMFreeToDefaultHeap", hle_free_default },
+    { "coreinit.MEMGetBaseHeapHandle", hle_get_base_heap },
+    { "coreinit.MEMGetAllocatableSizeForFrmHeapEx", hle_frm_heap_allocatable },
+    { "coreinit.MEMAllocFromFrmHeapEx", hle_frm_heap_alloc },
     { "coreinit.OSGetSystemTime", hle_get_system_time },
     { "coreinit.OSGetTime", hle_get_time },
     { "coreinit.OSGetSystemInfo", hle_get_system_info },
